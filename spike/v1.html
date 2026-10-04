@@ -1,0 +1,1204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Tangle spike v1</title>
+<style>
+html,body{margin:0;height:100%;background:#eef1f8;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+#bar{position:fixed;top:0;left:0;right:0;height:48px;display:flex;align-items:center;gap:8px;padding:0 10px;background:#fff;box-shadow:0 1px 4px #0002;z-index:2}
+#bar button,#bar select{font-size:15px;padding:5px 9px;border-radius:8px;border:1px solid #bbb;background:#f7f7f7}
+#info{margin-left:auto;font-size:15px;color:#333;white-space:nowrap}
+canvas{position:fixed;top:48px;left:0;display:block}
+#dbg{position:fixed;bottom:4px;left:6px;font:11px monospace;color:#445;white-space:pre;pointer-events:none;z-index:2}
+#msg{position:fixed;left:50%;top:45%;transform:translate(-50%,-50%);background:#fff;padding:18px 26px;border-radius:14px;box-shadow:0 4px 20px #0003;font-size:20px;text-align:center;display:none;z-index:3}
+</style>
+</head>
+<body>
+<div id="bar">
+  <select id="ropes">
+    <option value="4">4 ropes</option><option value="5" selected>5 ropes</option><option value="6">6 ropes</option>
+    <option value="7">7 ropes</option><option value="8">8 ropes</option><option value="10">10 ropes</option>
+  </select>
+  <button id="new">New</button>
+  <button id="demo" title="Replay the scramble backwards">Demo</button>
+  <button id="dbgBtn">🐞</button>
+  <a href="./" style="font-size:13px;color:#667">v2</a>
+  <span id="info"></span>
+</div>
+<canvas id="cv"></canvas>
+<div id="dbg"></div>
+<div id="msg"></div>
+<script>
+'use strict';
+const W = 12;
+const HMAX = 7;
+const DEPTH = W * 0.55;
+const STEP = 2;
+const DMAX = 3;
+const VMAX = 2;
+const ITER = 6;
+const DAMP = 0.9;
+const G = 64;
+const PEG_R = 17;
+const ENDTOL = HMAX + 2;
+const HELD_ENDTOL = 30;
+const POST_R = 14;
+const GAP = 24;
+const COLORS = ['#2e9e3a', '#2f7fe0', '#e0453a', '#f0a020', '#8e44d0', '#18b3b3', '#e05fa8', '#8a5a33', '#b8a800', '#5c6b7a'];
+
+const pairKey = (a, b) => a < b ? a * 64 + b : b * 64 + a;
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function makeBoard(cols, rows) {
+  const pegs = [];
+  for (let i = 0; i < cols; i++) pegs.push({ x: i * G, y: 0 });
+  for (let j = 1; j < rows; j++) pegs.push({ x: (cols - 1) * G, y: j * G });
+  for (let i = cols - 2; i >= 0; i--) pegs.push({ x: i * G, y: (rows - 1) * G });
+  for (let j = rows - 2; j >= 1; j--) pegs.push({ x: 0, y: j * G });
+  return { cols, rows, pegs, w: (cols - 1) * G, h: (rows - 1) * G };
+}
+
+function segX(p1, p2, p3, p4) {
+  const d1x = p2.x - p1.x, d1y = p2.y - p1.y, d2x = p4.x - p3.x, d2y = p4.y - p3.y;
+  const den = d1x * d2y - d1y * d2x;
+  if (Math.abs(den) < 1e-12) return null;
+  const ex = p3.x - p1.x, ey = p3.y - p1.y;
+  const t = (ex * d2y - ey * d2x) / den;
+  const u = (ex * d1y - ey * d1x) / den;
+  if (t < 0 || t >= 1 || u < 0 || u >= 1) return null;
+  return [t, u];
+}
+
+function lineX(A, B, C, D) {
+  const d1x = B.x - A.x, d1y = B.y - A.y, d2x = D.x - C.x, d2y = D.y - C.y;
+  const den = d1x * d2y - d1y * d2x;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((C.x - A.x) * d2y - (C.y - A.y) * d2x) / den;
+  return { x: A.x + d1x * t, y: A.y + d1y * t };
+}
+
+function nearestOnRope(r, lo, hi, x, y) {
+  const p = r.pts;
+  lo = Math.max(0, lo); hi = Math.min(p.length - 2, hi);
+  let best = null, bd = Infinity;
+  for (let k = lo; k <= hi; k++) {
+    const A = p[k], B = p[k + 1];
+    const sx = B.x - A.x, sy = B.y - A.y, l2 = sx * sx + sy * sy;
+    let t = l2 > 1e-12 ? ((x - A.x) * sx + (y - A.y) * sy) / l2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const qx = A.x + sx * t, qy = A.y + sy * t;
+    const d = (x - qx) ** 2 + (y - qy) ** 2;
+    if (d < bd) { bd = d; best = { k, t, qx, qy, sx, sy }; }
+  }
+  return best;
+}
+
+function sideOf(n, x, y) {
+  const c = n.sx * (y - n.qy) - n.sy * (x - n.qx);
+  return c > 0 ? 1 : c < 0 ? -1 : 0;
+}
+
+function pushVec(n, x, y, side, depth) {
+  const dx = x - n.qx, dy = y - n.qy, d = Math.hypot(dx, dy);
+  const sl = Math.hypot(n.sx, n.sy);
+  if (sl < 1e-9) return null;
+  const s = sideOf(n, x, y);
+  if (s === side && d > 1e-6) {
+    if (d >= depth) return null;
+    return [dx / d * (depth - d), dy / d * (depth - d)];
+  }
+  const m = depth + (s === side ? 0 : d);
+  return [-n.sy / sl * side * m, n.sx / sl * side * m];
+}
+
+function cyclic3(X, Y, Z, overXY, overXZ, overYZ) {
+  const xy = overXY === X, xz = overXZ === X, yz = overYZ === Y;
+  return (xy && yz && !xz) || (!xy && !yz && xz);
+}
+
+class Engine {
+  constructor(cols, rows) {
+    this.board = makeBoard(cols, rows);
+    this.ropes = [];
+    this.topo = new Map();
+    this.held = null;
+    this.zc = 0;
+    this.nextId = 1;
+    this.fails = 0;
+    this.failReasons = {};
+    this.maxSpeed = 0;
+    this.substeps = 0;
+  }
+
+  addRope(pa, pb, color) {
+    const A = this.board.pegs[pa], B = this.board.pegs[pb];
+    const n = Math.max(2, Math.ceil(Math.hypot(B.x - A.x, B.y - A.y) / HMAX));
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+      const x = A.x + (B.x - A.x) * i / n, y = A.y + (B.y - A.y) * i / n;
+      pts.push({ x, y, px: x, py: y });
+    }
+    this.ropes.push({ id: this.ropes.length, color, pts, ends: [pa, pb], z: ++this.zc, cleared: false, fade: 1, s: null, L: 0 });
+  }
+
+  init() {
+    const geo = this.detect();
+    for (const arr of geo.values()) for (const c of arr) {
+      c.id = this.nextId++;
+      c.over = this.ropes[c.a].z > this.ropes[c.b].z ? c.a : c.b;
+    }
+    this.topo = geo;
+  }
+
+  active() { return this.ropes.filter(r => !r.cleared); }
+  endIndex(r, e) { return e === 0 ? 0 : r.pts.length - 1; }
+  movable(r, i) { return i > 0 && i < r.pts.length - 1; }
+
+  occupied() {
+    const s = new Set();
+    for (const r of this.active()) for (const p of r.ends) if (p != null) s.add(p);
+    return s;
+  }
+
+  crossingCount(rid) {
+    let n = 0;
+    for (const arr of this.topo.values()) for (const c of arr) if (c.a === rid || c.b === rid) n++;
+    return n;
+  }
+
+  totalCrossings() {
+    let n = 0;
+    for (const arr of this.topo.values()) n += arr.length;
+    return n;
+  }
+
+  grab(rid, e) {
+    const r = this.ropes[rid];
+    this.held = { r: rid, e, from: r.ends[e] };
+    r.ends[e] = null;
+    r.z = ++this.zc;
+  }
+
+  heldPos() {
+    const r = this.ropes[this.held.r];
+    const p = r.pts[this.endIndex(r, this.held.e)];
+    return { x: p.x, y: p.y };
+  }
+
+  attach(peg) {
+    const r = this.ropes[this.held.r];
+    r.ends[this.held.e] = peg;
+    const p = r.pts[this.endIndex(r, this.held.e)], P = this.board.pegs[peg];
+    p.x = p.px = P.x; p.y = p.py = P.y;
+    this.held = null;
+  }
+
+  computeArc(r) {
+    const p = r.pts, s = new Float64Array(p.length);
+    for (let i = 1; i < p.length; i++) s[i] = s[i - 1] + Math.hypot(p[i].x - p[i - 1].x, p[i].y - p[i - 1].y);
+    r.s = s; r.L = s[p.length - 1];
+  }
+
+  snapshot() {
+    return { pts: this.ropes.map(r => r.pts.map(p => ({ x: p.x, y: p.y, px: p.px, py: p.py }))), topo: this.topo };
+  }
+
+  restore(s) {
+    this.ropes.forEach((r, i) => { r.pts = s.pts[i].map(p => ({ x: p.x, y: p.y, px: p.x, py: p.y })); });
+    this.topo = s.topo;
+    for (const r of this.ropes) this.computeArc(r);
+  }
+
+  substep(heldPos) {
+    this.substeps++;
+    const snap = this.snapshot();
+    this.dynamics(heldPos);
+    const geo = this.detect();
+    let res = this.reconcile(geo, false);
+    if (!res.ok && this.consecFails >= 30) {
+      res = this.reconcile(geo, true);
+      this.forced = (this.forced || 0) + 1;
+    }
+    if (!res.ok) {
+      this.consecFails = (this.consecFails || 0) + 1;
+      this.restore(snap);
+      this.fails++;
+      this.failReasons[res.reason] = (this.failReasons[res.reason] || 0) + 1;
+      if (window.STOP_ON_FAIL) { this.failGeo = geo; this.failReason = res.reason; this.failHeldPos = heldPos; throw { stop: this }; }
+      return false;
+    }
+    this.consecFails = 0;
+    this.topo = res.topo;
+    this.refine();
+    return true;
+  }
+
+  // ---------- physics ----------
+
+  dynamics(heldPos) {
+    const act = this.active();
+    const guards = this.buildGuards();
+    if (this.held && heldPos) {
+      const r = this.ropes[this.held.r], p = r.pts[this.endIndex(r, this.held.e)];
+      p.px = p.x; p.py = p.y; p.x = heldPos.x; p.y = heldPos.y;
+    }
+    for (const r of act) {
+      const p = r.pts, n = p.length;
+      for (let i = 1; i < n - 1; i++) {
+        const q = p[i];
+        let vx = (q.x - q.px) * DAMP, vy = (q.y - q.py) * DAMP;
+        const v = Math.hypot(vx, vy);
+        if (v > VMAX) { vx *= VMAX / v; vy *= VMAX / v; }
+        q.px = q.x; q.py = q.y; q.x += vx; q.y += vy;
+      }
+    }
+    const bw = this.board.w, bh = this.board.h;
+    for (let it = 0; it < ITER; it++) {
+      for (const r of act) {
+        const p = r.pts, n = p.length;
+        if (it & 1) {
+          for (let i = n - 2; i >= 1; i--) { const q = p[i]; q.x = (p[i - 1].x + p[i + 1].x) * 0.5; q.y = (p[i - 1].y + p[i + 1].y) * 0.5; }
+        } else {
+          for (let i = 1; i < n - 1; i++) { const q = p[i]; q.x = (p[i - 1].x + p[i + 1].x) * 0.5; q.y = (p[i - 1].y + p[i + 1].y) * 0.5; }
+        }
+      }
+      this.posts(act);
+      for (const g of guards) this.applyGuard(g);
+    }
+    let maxv = 0;
+    for (const r of act) {
+      const p = r.pts, n = p.length;
+      for (let i = 1; i < n - 1; i++) {
+        const q = p[i];
+        const dx = q.x - q.px, dy = q.y - q.py, d = Math.hypot(dx, dy);
+        if (d > DMAX) { q.x = q.px + dx * DMAX / d; q.y = q.py + dy * DMAX / d; }
+        if (d > maxv) maxv = d;
+      }
+    }
+    this.maxSpeed = maxv;
+    this.lastGuards = guards;
+  }
+
+  posts(act) {
+    const pegs = this.board.pegs, bw = this.board.w, bh = this.board.h, R = POST_R;
+    const hp = this.held ? this.heldPos() : null;
+    const occ = this.occupied();
+    for (const r of act) {
+      const p = r.pts, n = p.length, isHeld = this.held && this.held.r === r.id;
+      for (let k = 0; k < n - 1; k++) {
+        const A = p[k], B = p[k + 1];
+        const minx = Math.min(A.x, B.x), maxx = Math.max(A.x, B.x), miny = Math.min(A.y, B.y), maxy = Math.max(A.y, B.y);
+        if (minx > R && maxx < bw - R && miny > R && maxy < bh - R) continue;
+        for (let pi = 0; pi < pegs.length; pi++) {
+          if (!occ.has(pi) || pi === r.ends[0] || pi === r.ends[1]) continue;
+          const P = pegs[pi];
+          if (P.x < minx - R || P.x > maxx + R || P.y < miny - R || P.y > maxy + R) continue;
+          if (isHeld && Math.hypot(P.x - hp.x, P.y - hp.y) < R * 2.5) continue;
+          const sx = B.x - A.x, sy = B.y - A.y, l2 = sx * sx + sy * sy;
+          let t = l2 > 1e-12 ? ((P.x - A.x) * sx + (P.y - A.y) * sy) / l2 : 0;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const qx = A.x + sx * t, qy = A.y + sy * t;
+          let dx = qx - P.x, dy = qy - P.y, d = Math.hypot(dx, dy);
+          if (d >= R) continue;
+          if (d < 1e-6) { dx = bw / 2 - P.x; dy = bh / 2 - P.y; d = Math.hypot(dx, dy); dx /= d; dy /= d; }
+          else { dx /= d; dy /= d; }
+          const m = R - Math.max(d, 0);
+          if (this.movable(r, k)) { A.x += dx * m; A.y += dy * m; }
+          if (this.movable(r, k + 1)) { B.x += dx * m; B.y += dy * m; }
+        }
+      }
+    }
+  }
+
+  pushMidGuard(gs, R, segLo, segHi, uLo, uHi, O, oLo, oHi, depth, kind) {
+    const a = segLo + 1, b = segHi;
+    if (b < a) return;
+    const um = (uLo + uHi) / 2;
+    let best = -1, bd = Infinity;
+    for (let i = a; i <= b; i++) { const d = Math.abs(R.s[i] - um); if (d < bd) { bd = d; best = i; } }
+    const all = kind === 'clasp';
+    for (let i = all ? a : best; i <= (all ? b : best); i++) {
+      if (!this.movable(R, i)) continue;
+      const P = R.pts[i];
+      const n = nearestOnRope(O, oLo, oHi, P.x, P.y);
+      if (!n) continue;
+      const side = sideOf(n, P.x, P.y);
+      if (!side) continue;
+      gs.push({ type: 'p', kind, r: R.id, i, o: O.id, lo: oLo, hi: oHi, side, depth: i === best ? depth : 0.4 });
+    }
+  }
+
+  buildGuards() {
+    const gs = [];
+    const act = this.active();
+    const per = new Map();
+    for (const r of act) per.set(r.id, []);
+    for (const arr of this.topo.values()) {
+      const order = arr.map((_, i) => i).sort((i, j) => arr[i].ub - arr[j].ub);
+      const rankB = new Array(arr.length);
+      order.forEach((i, k) => { rankB[i] = k; });
+      for (let i = 0; i + 1 < arr.length; i++) {
+        const c1 = arr[i], c2 = arr[i + 1];
+        if (c1.over === c2.over || Math.abs(rankB[i] - rankB[i + 1]) !== 1) continue;
+        const A = this.ropes[c1.a], B = this.ropes[c1.b];
+        const bLo = Math.min(c1.segB, c2.segB), bHi = Math.max(c1.segB, c2.segB);
+        this.pushMidGuard(gs, A, c1.segA, c2.segA, c1.ua, c2.ua, B, bLo, bHi, DEPTH, 'clasp');
+        this.pushMidGuard(gs, B, bLo, bHi, Math.min(c1.ub, c2.ub), Math.max(c1.ub, c2.ub), A, c1.segA, c2.segA, DEPTH, 'clasp');
+      }
+      for (const c of arr) {
+        per.get(c.a).push({ c, u: c.ua, seg: c.segA, oseg: c.segB, other: c.b });
+        per.get(c.b).push({ c, u: c.ub, seg: c.segB, oseg: c.segA, other: c.a });
+      }
+    }
+    for (const r of act) {
+      const L = per.get(r.id);
+      if (!L.length) continue;
+      L.sort((p, q) => p.u - q.u);
+      const seenF = new Set(), seenL = new Set();
+      for (const f of L) {
+        if (seenF.has(f.other)) continue;
+        seenF.add(f.other);
+        const heldHere = this.held && this.held.r === r.id && this.held.e === 0;
+        if (heldHere && f.c.over !== r.id) this.pushMidGuard(gs, r, 0, f.seg, 0, f.u, this.ropes[f.other], f.oseg - 2, f.oseg + 2, DEPTH, 'end');
+      }
+      for (let j = L.length - 1; j >= 0; j--) {
+        const l = L[j];
+        if (seenL.has(l.other)) continue;
+        seenL.add(l.other);
+        const heldHere = this.held && this.held.r === r.id && this.held.e === 1;
+        if (heldHere && l.c.over !== r.id) this.pushMidGuard(gs, r, l.seg, r.pts.length - 2, l.u, r.L, this.ropes[l.other], l.oseg - 2, l.oseg + 2, DEPTH, 'end');
+      }
+    }
+    for (const r of act) {
+      const L = per.get(r.id);
+      for (let j = 0; j + 1 < L.length; j++) {
+        const c = L[j], d = L[j + 1];
+        if (d.u - c.u > 2 * W) continue;
+        if (this.mergeable(r.id, c, d)) continue;
+        if (c.other === d.other && c.c.over !== d.c.over && this.adjacentOnOther(r.id, c, d)) continue;
+        gs.push({ type: 's', x: r.id, kc: c.seg, oc: c.other, koc: c.oseg, kd: d.seg, od: d.other, kod: d.oseg });
+      }
+    }
+    const lim2 = (3 * W) ** 2;
+    const nearest = (arr, q) => {
+      if (!arr) return null;
+      let best = null, bd = lim2;
+      for (const c of arr) { const d = (c.x - q.x) ** 2 + (c.y - q.y) ** 2; if (d < bd) { bd = d; best = c; } }
+      return best;
+    };
+    for (const arr of this.topo.values()) for (const q of arr) {
+      const Y = q.a, Z = q.b;
+      for (const X of act) {
+        if (X.id === Y || X.id === Z) continue;
+        const xy = nearest(this.topo.get(pairKey(X.id, Y)), q);
+        if (!xy) continue;
+        const xz = nearest(this.topo.get(pairKey(X.id, Z)), q);
+        if (!xz) continue;
+        if (!cyclic3(X.id, Y, Z, xy.over, xz.over, q.over)) continue;
+        const k1 = xy.a === X.id ? xy.segA : xy.segB, k2 = xz.a === X.id ? xz.segA : xz.segB;
+        const lo = Math.min(k1, k2) - 1, hi = Math.max(k1, k2) + 1;
+        const n = nearestOnRope(X, lo, hi, q.x, q.y);
+        if (!n) continue;
+        const side = sideOf(n, q.x, q.y);
+        if (!side) continue;
+        gs.push({ type: 'q', y: Y, ky: q.segA, z: Z, kz: q.segB, o: X.id, lo, hi, side, depth: W * 0.5 });
+      }
+    }
+    return gs;
+  }
+
+  adjacentOnOther(X, c, d) {
+    const arr = this.topo.get(pairKey(X, c.other));
+    const byOther = arr.slice().sort((p, q) => (p.a === X ? p.ub - q.ub : p.ua - q.ua));
+    return Math.abs(byOther.indexOf(c.c) - byOther.indexOf(d.c)) === 1;
+  }
+
+  mergeable(X, c, d) {
+    if (c.other === d.other) {
+      if (c.c.over !== d.c.over) return false;
+      const arr = this.topo.get(pairKey(X, c.other));
+      const byOther = arr.slice().sort((p, q) => (p.a === X ? p.ub - q.ub : p.ua - q.ua));
+      return Math.abs(byOther.indexOf(c.c) - byOther.indexOf(d.c)) === 1;
+    }
+    const xOverY = c.c.over === X, xOverZ = d.c.over === X;
+    if (xOverY === xOverZ) return true;
+    let q = null, bd = (3 * W) ** 2;
+    const mx = (c.c.x + d.c.x) / 2, my = (c.c.y + d.c.y) / 2;
+    for (const e of this.topo.get(pairKey(c.other, d.other)) || []) {
+      const dd = (e.x - mx) ** 2 + (e.y - my) ** 2;
+      if (dd < bd) { bd = dd; q = e; }
+    }
+    return q ? !cyclic3(X, c.other, d.other, c.c.over, d.c.over, q.over) : false;
+  }
+
+  applyCorr(cx, cy, plus, minus) {
+    const pm = plus.filter(([R, i]) => this.movable(R, i));
+    const mm = minus.filter(([R, i]) => this.movable(R, i));
+    if (!pm.length && !mm.length) return;
+    const fp = !mm.length ? 1 : !pm.length ? 0 : 0.5;
+    for (const [R, i] of pm) { R.pts[i].x += cx * fp; R.pts[i].y += cy * fp; }
+    for (const [R, i] of mm) { R.pts[i].x -= cx * (1 - fp); R.pts[i].y -= cy * (1 - fp); }
+  }
+
+  applyGuard(g) {
+    if (g.type === 's') {
+      if (window.NO_SEP) return;
+      const X = this.ropes[g.x], C = this.ropes[g.oc], D = this.ropes[g.od];
+      if (g.kc >= X.pts.length - 1 || g.kd >= X.pts.length - 1 || g.koc >= C.pts.length - 1 || g.kod >= D.pts.length - 1) return;
+      const pc = lineX(X.pts[g.kc], X.pts[g.kc + 1], C.pts[g.koc], C.pts[g.koc + 1]);
+      const pd = lineX(X.pts[g.kd], X.pts[g.kd + 1], D.pts[g.kod], D.pts[g.kod + 1]);
+      if (!pc || !pd) return;
+      let dx = pd.x - pc.x, dy = pd.y - pc.y, d = Math.hypot(dx, dy);
+      if (d >= W) return;
+      if (d < 1e-6) {
+        const A = X.pts[g.kc], B = X.pts[g.kd + 1];
+        dx = B.x - A.x; dy = B.y - A.y; d = Math.hypot(dx, dy);
+        if (d < 1e-9) return;
+        dx /= d; dy /= d; d = 0;
+      } else { dx /= d; dy /= d; }
+      const A = X.pts[g.kc], B = X.pts[g.kd + 1];
+      let tx = B.x - A.x, ty = B.y - A.y;
+      const tl = Math.hypot(tx, ty);
+      if (tl < 1e-9) return;
+      tx /= tl; ty /= tl;
+      const m = Math.min(W - d, 2) * 0.25;
+      this.applyCorr(tx * m, ty * m, [[D, g.kod], [D, g.kod + 1]], [[C, g.koc], [C, g.koc + 1]]);
+      return;
+    }
+    if (g.type === 'p') {
+      const R = this.ropes[g.r], O = this.ropes[g.o], P = R.pts[g.i];
+      const n = nearestOnRope(O, g.lo, g.hi, P.x, P.y);
+      if (!n) return;
+      const c = pushVec(n, P.x, P.y, g.side, g.depth);
+      if (!c) return;
+      this.applyCorr(c[0], c[1], [[R, g.i]], [[O, n.k], [O, n.k + 1]]);
+    } else {
+      const Y = this.ropes[g.y], Z = this.ropes[g.z], X = this.ropes[g.o];
+      if (g.ky >= Y.pts.length - 1 || g.kz >= Z.pts.length - 1) return;
+      const q = lineX(Y.pts[g.ky], Y.pts[g.ky + 1], Z.pts[g.kz], Z.pts[g.kz + 1]);
+      if (!q) return;
+      const n = nearestOnRope(X, g.lo, g.hi, q.x, q.y);
+      if (!n) return;
+      const c = pushVec(n, q.x, q.y, g.side, g.depth);
+      if (!c) return;
+      this.applyCorr(c[0], c[1], [[Y, g.ky], [Y, g.ky + 1], [Z, g.kz], [Z, g.kz + 1]], [[X, n.k], [X, n.k + 1]]);
+    }
+  }
+
+  refine() {
+    const segCross = new Map();
+    for (const r of this.active()) segCross.set(r.id, new Map());
+    const add = (rid, k, t) => {
+      const m = segCross.get(rid);
+      if (!m) return;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(t);
+    };
+    const all = [];
+    for (const arr of this.topo.values()) for (const c of arr) { all.push(c); add(c.a, c.segA, c.tA); add(c.b, c.segB, c.tB); }
+    for (const r of this.active()) {
+      const p = r.pts, n = p.length, sc = segCross.get(r.id);
+      const ins = new Map();
+      for (let k = 0; k < n - 1; k++) {
+        const len = Math.hypot(p[k + 1].x - p[k].x, p[k + 1].y - p[k].y);
+        let ts = [];
+        const cs = sc.get(k);
+        if (cs) {
+          cs.sort((a, b) => a - b);
+          for (let i = 0; i + 1 < cs.length; i++) ts.push((cs[i] + cs[i + 1]) / 2);
+          if (k === 0) ts.push(cs[0] / 2);
+          if (k === n - 2) ts.push((cs[cs.length - 1] + 1) / 2);
+        }
+        if (len > HMAX) { const m = Math.ceil(len / HMAX); for (let q = 1; q < m; q++) ts.push(q / m); }
+        if (ts.length) {
+          ts.sort((a, b) => a - b);
+          ts = ts.filter((t, i) => t > 1e-4 && t < 1 - 1e-4 && (i === 0 || t - ts[i - 1] > 1e-4));
+          if (ts.length) ins.set(k, ts);
+        }
+      }
+      const rem = new Uint8Array(n);
+      let nrem = 0;
+      for (let i = 1; i < n - 1; i++) {
+        if (sc.has(i - 1) || sc.has(i) || ins.has(i - 1) || ins.has(i) || rem[i - 1]) continue;
+        const a = p[i - 1], b = p[i + 1], c = p[i];
+        const bx = b.x - a.x, by = b.y - a.y, bl = Math.hypot(bx, by);
+        if (bl > HMAX * 0.9 || bl < 1e-9) continue;
+        if (Math.abs(bx * (c.y - a.y) - by * (c.x - a.x)) / bl < 0.05) { rem[i] = 1; nrem++; }
+      }
+      if (!ins.size && !nrem) continue;
+      const np = [], newIdx = new Int32Array(n);
+      for (let i = 0; i < n; i++) {
+        newIdx[i] = np.length;
+        if (!rem[i]) np.push(p[i]);
+        const ts = ins.get(i);
+        if (ts) {
+          const A = p[i], B = p[i + 1];
+          for (const t of ts) np.push({ x: A.x + (B.x - A.x) * t, y: A.y + (B.y - A.y) * t, px: A.px + (B.px - A.px) * t, py: A.py + (B.py - A.py) * t });
+        }
+      }
+      r.pts = np;
+      const remap = (k, t) => {
+        const ts = ins.get(k) || [];
+        let j = 0;
+        while (j < ts.length && ts[j] <= t) j++;
+        const t0 = j > 0 ? ts[j - 1] : 0, t1 = j < ts.length ? ts[j] : 1;
+        return [newIdx[k] + j, (t - t0) / (t1 - t0)];
+      };
+      for (const c of all) {
+        if (c.a === r.id) [c.segA, c.tA] = remap(c.segA, c.tA);
+        if (c.b === r.id) [c.segB, c.tB] = remap(c.segB, c.tB);
+      }
+      this.computeArc(r);
+    }
+  }
+
+  // ---------- topology ----------
+
+  detect() {
+    const act = this.active();
+    for (const r of act) this.computeArc(r);
+    const CELL = 24, grid = new Map();
+    for (const r of act) {
+      const p = r.pts;
+      for (let k = 0; k < p.length - 1; k++) {
+        const a = p[k], b = p[k + 1];
+        const x0 = Math.floor(Math.min(a.x, b.x) / CELL), x1 = Math.floor(Math.max(a.x, b.x) / CELL);
+        const y0 = Math.floor(Math.min(a.y, b.y) / CELL), y1 = Math.floor(Math.max(a.y, b.y) / CELL);
+        for (let cx = x0; cx <= x1; cx++) for (let cy = y0; cy <= y1; cy++) {
+          const key = (cx + 64) * 4096 + cy + 64;
+          let l = grid.get(key);
+          if (!l) grid.set(key, l = []);
+          l.push(r.id * 65536 + k);
+        }
+      }
+    }
+    const seen = new Set(), out = new Map();
+    for (const l of grid.values()) {
+      for (let i = 0; i < l.length; i++) for (let j = i + 1; j < l.length; j++) {
+        let va = l[i], vb = l[j];
+        let ra = Math.floor(va / 65536), rb = Math.floor(vb / 65536);
+        if (ra === rb) continue;
+        if (ra > rb) { [va, vb] = [vb, va]; [ra, rb] = [rb, ra]; }
+        const code = va * 2097152 + vb;
+        if (seen.has(code)) continue;
+        seen.add(code);
+        const ka = va % 65536, kb = vb % 65536;
+        const A = this.ropes[ra], B = this.ropes[rb];
+        const hit = segX(A.pts[ka], A.pts[ka + 1], B.pts[kb], B.pts[kb + 1]);
+        if (!hit) continue;
+        const [tA, tB] = hit;
+        const pa = A.pts[ka], pa2 = A.pts[ka + 1], pb = B.pts[kb], pb2 = B.pts[kb + 1];
+        const c = {
+          a: ra, b: rb, segA: ka, tA, segB: kb, tB,
+          x: pa.x + (pa2.x - pa.x) * tA, y: pa.y + (pa2.y - pa.y) * tA,
+          ua: A.s[ka] + (A.s[ka + 1] - A.s[ka]) * tA,
+          ub: B.s[kb] + (B.s[kb + 1] - B.s[kb]) * tB,
+          La: A.L, Lb: B.L,
+        };
+        const key = pairKey(ra, rb);
+        let arr = out.get(key);
+        if (!arr) out.set(key, arr = []);
+        arr.push(c);
+      }
+    }
+    for (const arr of out.values()) arr.sort((p, q) => p.ua - q.ua);
+    return out;
+  }
+
+  isHeldEnd(rid, u, L, tol) {
+    if (!this.held || this.held.r !== rid) return false;
+    return this.held.e === 0 ? u < tol : L - u < tol;
+  }
+
+  heldEndDist(c) {
+    if (!this.held) return 0;
+    const u = c.a === this.held.r ? c.ua : c.b === this.held.r ? c.ub : null;
+    if (u == null) return 0;
+    const L = c.a === this.held.r ? c.La : c.Lb;
+    return this.held.e === 0 ? u : L - u;
+  }
+
+  endTop(c, birth) {
+    const tol = HELD_ENDTOL;
+    if (this.isHeldEnd(c.a, c.ua, c.La, tol)) return c.a;
+    if (this.isHeldEnd(c.b, c.ub, c.Lb, tol)) return c.b;
+    const na = c.ua < ENDTOL || c.La - c.ua < ENDTOL;
+    const nb = c.ub < ENDTOL || c.Lb - c.ub < ENDTOL;
+    if (na) return c.b;
+    if (nb) return c.a;
+    return -1;
+  }
+
+  reconcile(geo, force) {
+    const topo = new Map();
+    const keys = new Set([...this.topo.keys(), ...geo.keys()]);
+    for (const key of keys) {
+      const O = this.topo.get(key) || [], N = geo.get(key) || [];
+      let chosen = null, firstReason = null;
+      if (O.length === N.length) chosen = { pairs: O.map((_, i) => [i, i]), dels: [], ins: [] };
+      else {
+        const cands = candidates(O, N);
+        for (const cand of cands) cand.cost += cand.ins.reduce((a, j) => a + this.heldEndDist(N[j]), 0);
+        cands.sort((a, b) => a.cost - b.cost);
+        for (const cand of cands) {
+          const r = (cand.dels.length && this.checkDeaths(O, cand.dels)) || (cand.ins.length && this.labelBirths(N, cand.ins, false));
+          if (!r) { chosen = cand; break; }
+          if (!firstReason) firstReason = r;
+        }
+        if (!chosen && force) chosen = cands[0];
+        if (!chosen) return { ok: false, reason: firstReason };
+      }
+      for (const [i, j] of chosen.pairs) { N[j].id = O[i].id; N[j].over = O[i].over; N[j].prev = O[i]; }
+      if (chosen.ins.length) this.labelBirths(N, chosen.ins, true);
+      if (force) for (const c of N) if (c.id == null) { c.id = this.nextId++; c.over = this.ropes[c.a].z > this.ropes[c.b].z ? c.a : c.b; }
+      if (N.length) topo.set(key, N);
+    }
+    const r3 = force ? null : this.checkR3(topo);
+    for (const arr of topo.values()) for (const c of arr) c.prev = undefined;
+    if (r3) return { ok: false, reason: r3 };
+    return { ok: true, topo };
+  }
+
+  checkDeaths(O, dels) {
+    const set = new Set(dels), used = new Set();
+    for (const i of dels) {
+      if (used.has(i)) continue;
+      const c = O[i];
+      if (set.has(i + 1) && !used.has(i + 1)) {
+        const d = O[i + 1];
+        if (c.over !== d.over) return 'clasp-collapse';
+        if (adjacentB(O, c, d)) { used.add(i); used.add(i + 1); continue; }
+      }
+      const e = this.endTop(c);
+      if (e >= 0 && (c.over === e || !this.isHeldEnd(c.a, c.ua, c.La, HELD_ENDTOL) && !this.isHeldEnd(c.b, c.ub, c.Lb, HELD_ENDTOL))) { used.add(i); continue; }
+      if (!this.failInfo) this.failInfo = { kind: 'death', c: { a: c.a, b: c.b, over: c.over, ua: c.ua, La: c.La, ub: c.ub, Lb: c.Lb, x: c.x, y: c.y }, dels, n: O.length, held: this.held && { ...this.held }, ends: this.ropes.map(r => r.ends.slice()) };
+      return e >= 0 ? 'slip-under-end' : 'lone-death';
+    }
+    return null;
+  }
+
+  labelBirths(N, ins, apply) {
+    const set = new Set(ins), used = new Set();
+    for (const i of ins) {
+      if (used.has(i)) continue;
+      const c = N[i];
+      if (set.has(i + 1) && !used.has(i + 1) && adjacentB(N, c, N[i + 1])) {
+        const d = N[i + 1];
+        const top = this.ropes[c.a].z > this.ropes[c.b].z ? c.a : c.b;
+        if (apply) { c.over = d.over = top; c.id = this.nextId++; d.id = this.nextId++; }
+        used.add(i); used.add(i + 1);
+        continue;
+      }
+      const e = this.endTop(c, true);
+      if (e >= 0) { if (apply) { c.over = e; c.id = this.nextId++; } used.add(i); continue; }
+      return 'lone-birth';
+    }
+    return null;
+  }
+
+  checkR3(topo) {
+    const per = new Map();
+    const push = (r, v) => { let l = per.get(r); if (!l) per.set(r, l = []); l.push(v); };
+    for (const arr of topo.values()) for (const c of arr) {
+      if (!c.prev) continue;
+      push(c.a, { c, o: c.prev.ua, n: c.ua, other: c.b });
+      push(c.b, { c, o: c.prev.ub, n: c.ub, other: c.a });
+    }
+    for (const [X, L] of per) {
+      L.sort((p, q) => p.o - q.o);
+      for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
+        if (L[j].n >= L[i].n) continue;
+        const Y = L[i].other, Z = L[j].other;
+        if (Y === Z) return 'same-pair-swap';
+        if ((L[i].c.over === X) === (L[j].c.over === X)) continue;
+        const mx = (L[i].c.x + L[j].c.x) / 2, my = (L[i].c.y + L[j].c.y) / 2;
+        let q = null, bd = (4 * W) ** 2;
+        for (const c of topo.get(pairKey(Y, Z)) || []) {
+          const d = (c.x - mx) ** 2 + (c.y - my) ** 2;
+          if (d < bd) { bd = d; q = c; }
+        }
+        if (!q) return 'r3-no-crossing';
+        if (cyclic3(X, Y, Z, L[i].c.over, L[j].c.over, q.over)) return 'r3-cyclic';
+      }
+    }
+    return null;
+  }
+
+  clearFree() {
+    const cleared = [];
+    for (const r of this.active()) {
+      if (r.ends[0] == null || r.ends[1] == null) continue;
+      if (this.crossingCount(r.id) === 0) { r.cleared = true; r.fade = 1; cleared.push(r.id); }
+    }
+    return cleared;
+  }
+}
+
+function adjacentB(arr, c, d) {
+  const sorted = arr.slice().sort((p, q) => p.ub - q.ub);
+  return Math.abs(sorted.indexOf(c) - sorted.indexOf(d)) === 1;
+}
+
+function subsets(n, k) {
+  const out = [];
+  if (k === 1) for (let i = 0; i < n; i++) out.push([i]);
+  else if (k === 2) for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) out.push([i, j]);
+  return out;
+}
+
+function candidates(O, N) {
+  const k = Math.abs(O.length - N.length);
+  if (k > 2) return [align(O, N)];
+  const cost = (a, b) => Math.abs(a.ua - b.ua) + Math.abs(a.ub - b.ub);
+  const out = [];
+  const delSide = O.length > N.length;
+  for (const gap of subsets(delSide ? O.length : N.length, k)) {
+    const g = new Set(gap), pairs = [];
+    let c = 0, j = 0;
+    const long = delSide ? O : N;
+    for (let i = 0; i < long.length; i++) {
+      if (g.has(i)) continue;
+      pairs.push(delSide ? [i, j] : [j, i]);
+      c += delSide ? cost(O[i], N[j]) : cost(O[j], N[i]);
+      j++;
+    }
+    out.push({ pairs, dels: delSide ? gap : [], ins: delSide ? [] : gap, cost: c });
+  }
+  out.sort((a, b) => a.cost - b.cost);
+  return out;
+}
+
+function align(O, N) {
+  const n = O.length, m = N.length;
+  const C = Array.from({ length: n + 1 }, () => new Float64Array(m + 1));
+  const B = Array.from({ length: n + 1 }, () => new Uint8Array(m + 1));
+  for (let i = 1; i <= n; i++) { C[i][0] = i * GAP; B[i][0] = 1; }
+  for (let j = 1; j <= m; j++) { C[0][j] = j * GAP; B[0][j] = 2; }
+  for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) {
+    const mc = C[i - 1][j - 1] + Math.min(GAP * 1.9, Math.abs(O[i - 1].ua - N[j - 1].ua) + Math.abs(O[i - 1].ub - N[j - 1].ub));
+    const dc = C[i - 1][j] + GAP, ic = C[i][j - 1] + GAP;
+    if (mc <= dc && mc <= ic) { C[i][j] = mc; B[i][j] = 0; }
+    else if (dc <= ic) { C[i][j] = dc; B[i][j] = 1; }
+    else { C[i][j] = ic; B[i][j] = 2; }
+  }
+  const pairs = [], dels = [], ins = [];
+  let i = n, j = m;
+  while (i > 0 || j > 0) {
+    const b = B[i][j];
+    if (i > 0 && j > 0 && b === 0) { pairs.push([i - 1, j - 1]); i--; j--; }
+    else if (i > 0 && (j === 0 || b === 1)) { dels.push(i - 1); i--; }
+    else { ins.push(j - 1); j--; }
+  }
+  dels.reverse(); ins.reverse();
+  return { pairs, dels, ins };
+}
+
+// ---------- generation ----------
+
+function sizeFor(n) {
+  return { 4: [4, 5], 5: [4, 6], 6: [5, 6], 7: [5, 7], 8: [6, 7], 9: [6, 8], 10: [7, 8] }[n] || [5, 6];
+}
+
+function settle(E, max = 600) {
+  for (let i = 0; i < max; i++) {
+    E.substep(null);
+    if (i > 20 && E.maxSpeed < 0.01) return i;
+  }
+  return max;
+}
+
+function insetPoint(E, P, d) {
+  const cx = E.board.w / 2, cy = E.board.h / 2;
+  const dx = cx - P.x, dy = cy - P.y, l = Math.hypot(dx, dy);
+  return { x: P.x + dx / l * d, y: P.y + dy / l * d };
+}
+
+function simulateMove(E, rid, e, toPeg) {
+  const A = E.board.pegs[E.ropes[rid].ends[e]], B = E.board.pegs[toPeg];
+  E.grab(rid, e);
+  const path = [insetPoint(E, A, 24), insetPoint(E, B, 24), { x: B.x, y: B.y }];
+  let guard = 0, stuck = 0;
+  for (const T of path) {
+    while (guard++ < 20000) {
+      const c = E.heldPos();
+      const d = Math.hypot(T.x - c.x, T.y - c.y);
+      if (d < 1e-6) break;
+      const s = Math.min(STEP, d);
+      if (E.substep({ x: c.x + (T.x - c.x) / d * s, y: c.y + (T.y - c.y) / d * s })) stuck = 0;
+      else if (++stuck > 200) { E.stuckMoves = (E.stuckMoves || 0) + 1; break; }
+    }
+  }
+  E.attach(toPeg);
+  settle(E);
+}
+
+function generate(seed, nRopes, kMoves) {
+  const rand = mulberry32(seed);
+  const [cols, rows] = sizeFor(nRopes);
+  const E = new Engine(cols, rows);
+  const M = E.board.pegs.length;
+  const idx = [...Array(M).keys()];
+  for (let i = M - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+  const chosen = idx.slice(0, 2 * nRopes).sort((a, b) => a - b);
+  const shift = rand() < 0.5 ? 0 : 1;
+  const colors = COLORS.slice();
+  for (let i = colors.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [colors[i], colors[j]] = [colors[j], colors[i]]; }
+  for (let i = 0; i < nRopes; i++) E.addRope(chosen[(2 * i + shift) % chosen.length], chosen[(2 * i + 1 + shift) % chosen.length], colors[i % colors.length]);
+  E.init();
+  const moves = [];
+  const doMove = rid => {
+    const r = E.ropes[rid], e = rand() < 0.5 ? 0 : 1;
+    const occ = E.occupied();
+    const free = [...Array(M).keys()].filter(p => !occ.has(p));
+    const to = free[Math.floor(rand() * free.length)];
+    moves.push({ r: rid, e, from: r.ends[e], to });
+    simulateMove(E, rid, e, to);
+  };
+  for (let m = 0; m < kMoves; m++) doMove(Math.floor(rand() * nRopes));
+  for (let extra = 0; extra < 3 * nRopes; extra++) {
+    const zero = E.ropes.filter(r => E.crossingCount(r.id) === 0);
+    if (!zero.length) break;
+    doMove(zero[Math.floor(rand() * zero.length)].id);
+  }
+  for (const r of E.ropes) r.z = ++E.zc;
+  return { E, moves, par: moves.length };
+}
+
+// ---------- UI ----------
+
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const info = document.getElementById('info'), dbgEl = document.getElementById('dbg'), msgEl = document.getElementById('msg');
+let E = null, game = null, phase = 'idle', pointer = null, dragPath = [], queue = [], targetPeg = null, heldFrom = null;
+let paused = false;
+let moves = 0, settleN = 0, debug = false, demo = null, view = { s: 1, ox: 0, oy: 0 }, dpr = 1, frameMs = 0, subPerFrame = 0;
+const MAXSUB = 60, IDLE_SUB = 4;
+
+function newGame() {
+  msgEl.style.display = 'none';
+  const n = +document.getElementById('ropes').value;
+  const t0 = performance.now();
+  game = generate((Math.random() * 2 ** 31) | 0, n, n);
+  game.genMs = performance.now() - t0;
+  E = game.E;
+  moves = 0; phase = 'idle'; demo = null; queue = [];
+  layout();
+}
+
+function layout() {
+  dpr = window.devicePixelRatio || 1;
+  const cw = window.innerWidth, ch = window.innerHeight - 48;
+  cv.width = cw * dpr; cv.height = ch * dpr; cv.style.width = cw + 'px'; cv.style.height = ch + 'px';
+  if (!E) return;
+  const M = PEG_R + 10, bw = E.board.w + 2 * M, bh = E.board.h + 2 * M;
+  const s = Math.min(cw / bw, ch / bh);
+  view = { s, ox: (cw - bw * s) / 2 + M * s, oy: (ch - bh * s) / 2 + M * s };
+}
+
+function toBoard(ev) {
+  const r = cv.getBoundingClientRect();
+  return { x: (ev.clientX - r.left - view.ox) / view.s, y: (ev.clientY - r.top - view.oy) / view.s };
+}
+
+function clampBoard(p) {
+  const m = W;
+  return { x: Math.max(m, Math.min(E.board.w - m, p.x)), y: Math.max(m, Math.min(E.board.h - m, p.y)) };
+}
+
+function freePegNear(p, rad) {
+  const occ = E.occupied();
+  let best = null, bd = rad * rad;
+  E.board.pegs.forEach((P, i) => {
+    if (occ.has(i)) return;
+    const d = (P.x - p.x) ** 2 + (P.y - p.y) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  });
+  return best;
+}
+
+cv.addEventListener('pointerdown', ev => {
+  if (!E || demo || (phase !== 'idle' && phase !== 'settling')) return;
+  const p = toBoard(ev);
+  let best = null, bd = (PEG_R * 1.5) ** 2;
+  for (const r of E.active()) for (const e of [0, 1]) {
+    const peg = r.ends[e];
+    if (peg == null) continue;
+    const P = E.board.pegs[peg], d = (P.x - p.x) ** 2 + (P.y - p.y) ** 2;
+    if (d < bd) { bd = d; best = [r.id, e, peg]; }
+  }
+  if (!best) return;
+  cv.setPointerCapture(ev.pointerId);
+  E.grab(best[0], best[1]);
+  heldFrom = best[2];
+  pointer = clampBoard(p);
+  dragPath = [{ ...E.board.pegs[heldFrom] }];
+  phase = 'held';
+});
+
+cv.addEventListener('pointermove', ev => {
+  if (phase !== 'held') return;
+  pointer = clampBoard(toBoard(ev));
+  const l = dragPath[dragPath.length - 1];
+  if (Math.hypot(pointer.x - l.x, pointer.y - l.y) > 3) dragPath.push({ ...pointer });
+});
+
+const release = () => {
+  if (phase !== 'held') return;
+  const peg = freePegNear(E.heldPos(), PEG_R * 1.6);
+  if (peg != null) { queue = [{ ...E.board.pegs[peg] }]; targetPeg = peg; }
+  if (peg != null && dragPath.length) queue.unshift(clampBoard(E.heldPos()));
+  else { queue = dragPath.slice().reverse(); targetPeg = heldFrom; }
+  phase = 'moving';
+};
+cv.addEventListener('pointerup', release);
+cv.addEventListener('pointercancel', release);
+
+function advance(target, budget) {
+  let used = 0;
+  while (used < budget) {
+    const c = E.heldPos();
+    const d = Math.hypot(target.x - c.x, target.y - c.y);
+    if (d < 1e-3) return { reached: true, used };
+    const s = Math.min(STEP, d);
+    E.substep({ x: c.x + (target.x - c.x) / d * s, y: c.y + (target.y - c.y) / d * s });
+    used++;
+  }
+  return { reached: false, used };
+}
+
+function startDemo() {
+  if (!game || phase !== 'idle') return;
+  demo = game.moves.slice().reverse();
+  nextDemo();
+}
+
+function nextDemo() {
+  if (!demo) return;
+  while (demo.length) {
+    const m = demo.shift();
+    const r = E.ropes[m.r];
+    if (r.cleared || r.ends[m.e] !== m.to) continue;
+    E.grab(m.r, m.e);
+    heldFrom = m.to;
+    queue = [insetPoint(E, E.board.pegs[m.to], 24), insetPoint(E, E.board.pegs[m.from], 24), { ...E.board.pegs[m.from] }];
+    targetPeg = m.from;
+    phase = 'moving';
+    return;
+  }
+  demo = null;
+}
+
+function tick() {
+  const t0 = performance.now();
+  let subs = 0;
+  if (E && paused) render();
+  else if (E) {
+    if (phase === 'held') {
+      const r = advance(pointer, MAXSUB);
+      subs += r.used;
+      if (r.reached) for (let i = 0; i < 2; i++) { E.substep(E.heldPos()); subs++; }
+    } else if (phase === 'moving') {
+      let budget = demo ? 12 : MAXSUB;
+      while (queue.length && budget > 0) {
+        const r = advance(queue[0], budget);
+        budget -= r.used; subs += r.used;
+        if (r.reached) queue.shift(); else break;
+      }
+      if (!queue.length) {
+        E.attach(targetPeg);
+        if (targetPeg !== heldFrom) moves++;
+        phase = 'settling'; settleN = 0;
+      }
+    } else if (phase === 'settling') {
+      for (let i = 0; i < IDLE_SUB; i++) E.substep(null);
+      subs += IDLE_SUB;
+      {
+        settleN++;
+        if ((E.maxSpeed < 0.05 && settleN > 8) || settleN > 60) {
+          E.clearFree();
+          phase = 'idle';
+          if (!E.active().length) showWin();
+          else if (demo) nextDemo();
+        }
+      }
+    }
+    for (const r of E.ropes) if (r.cleared && r.fade > 0) r.fade = Math.max(0, r.fade - 0.05);
+    render();
+  }
+  frameMs = frameMs * 0.9 + (performance.now() - t0) * 0.1;
+  subPerFrame = subPerFrame * 0.9 + subs * 0.1;
+  requestAnimationFrame(tick);
+}
+
+function showWin() {
+  const par = game.par, stars = moves <= par ? 3 : moves <= par + 2 ? 2 : 1;
+  msgEl.innerHTML = `${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}<br><small>${moves} moves · par ${par}</small>`;
+  msgEl.style.display = 'block';
+  demo = null;
+}
+
+function ropePath(pts) {
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+}
+
+function strokeRope(pts, color, cap) {
+  ctx.lineCap = cap; ctx.lineJoin = 'round';
+  ropePath(pts);
+  ctx.strokeStyle = '#1d2230'; ctx.lineWidth = W + 3; ctx.stroke();
+  ctx.strokeStyle = color; ctx.lineWidth = W; ctx.stroke();
+}
+
+function subPolyline(r, u0, u1) {
+  const p = r.pts, s = r.s, out = [];
+  u0 = Math.max(0, u0); u1 = Math.min(r.L, u1);
+  const at = u => {
+    let lo = 0, hi = p.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (s[m] <= u) lo = m; else hi = m; }
+    const seg = s[hi] - s[lo], t = seg > 1e-9 ? (u - s[lo]) / seg : 0;
+    return { x: p[lo].x + (p[hi].x - p[lo].x) * t, y: p[lo].y + (p[hi].y - p[lo].y) * t, i: lo };
+  };
+  const a = at(u0), b = at(u1);
+  out.push(a);
+  for (let i = a.i + 1; i <= b.i; i++) out.push(p[i]);
+  out.push(b);
+  return out;
+}
+
+function render() {
+  const cw = cv.width / dpr, ch = cv.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#eef1f8'; ctx.fillRect(0, 0, cw, ch);
+  ctx.setTransform(dpr * view.s, 0, 0, dpr * view.s, dpr * view.ox, dpr * view.oy);
+  const occ = new Map();
+  for (const r of E.active()) r.ends.forEach(p => { if (p != null) occ.set(p, r); });
+  const hover = phase === 'held' ? freePegNear(E.heldPos(), PEG_R * 1.6) : null;
+  E.board.pegs.forEach((P, i) => {
+    ctx.beginPath(); ctx.arc(P.x, P.y, PEG_R, 0, Math.PI * 2);
+    if (occ.has(i)) { ctx.fillStyle = occ.get(i).color; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = '#1d2230'; ctx.stroke(); }
+    else { ctx.fillStyle = i === hover ? '#b9c3e6' : '#d6dbee'; ctx.fill(); }
+  });
+  for (const r of E.ropes) if (r.cleared && r.fade > 0) {
+    ctx.globalAlpha = r.fade; strokeRope(r.pts, r.color, 'round'); ctx.globalAlpha = 1;
+  }
+  const act = E.active().sort((a, b) => a.z - b.z);
+  for (const r of act) strokeRope(r.pts, r.color, 'round');
+  const overlays = [];
+  for (const arr of E.topo.values()) for (const c of arr) overlays.push(c);
+  overlays.sort((a, b) => E.ropes[a.over].z - E.ropes[b.over].z);
+  for (const c of overlays) {
+    const r = E.ropes[c.over], u = c.over === c.a ? c.ua : c.ub;
+    strokeRope(subPolyline(r, u - W * 1.1, u + W * 1.1), r.color, 'butt');
+  }
+  for (const r of act) for (const e of [0, 1]) {
+    const p = r.pts[E.endIndex(r, e)];
+    const held = E.held && E.held.r === r.id && E.held.e === e;
+    ctx.beginPath(); ctx.arc(p.x, p.y, held ? PEG_R * 0.95 : W * 0.75, 0, Math.PI * 2);
+    if (held) { ctx.shadowColor = '#0006'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 4; }
+    ctx.fillStyle = r.color; ctx.fill();
+    ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+    ctx.lineWidth = 2.5; ctx.strokeStyle = '#1d2230'; ctx.stroke();
+  }
+  if (debug && E.failGeo) {
+    for (const arr of E.failGeo.values()) for (const c of arr) {
+      ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, Math.PI * 2); ctx.strokeStyle = '#f00'; ctx.lineWidth = 1; ctx.stroke();
+    }
+    if (E.failHeldPos) { ctx.beginPath(); ctx.arc(E.failHeldPos.x, E.failHeldPos.y, 4, 0, Math.PI * 2); ctx.fillStyle = '#f00'; ctx.fill(); }
+  }
+  if (debug) {
+    for (const c of overlays) {
+      ctx.beginPath(); ctx.arc(c.x, c.y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = '#000'; ctx.fill();
+    }
+    for (const g of E.lastGuards || []) {
+      if (g.type !== 'p') continue;
+      const P = E.ropes[g.r].pts[g.i];
+      if (!P) continue;
+      ctx.beginPath(); ctx.arc(P.x, P.y, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = g.kind === 'end' ? '#f0f' : '#ff0'; ctx.fill();
+    }
+  }
+  const act2 = E.active().length;
+  info.textContent = `Moves ${moves} · Par ${game.par}` + (act2 ? '' : ' ✓');
+  if (debug) {
+    const parts = E.active().reduce((n, r) => n + r.pts.length, 0);
+    dbgEl.textContent = `frame ${frameMs.toFixed(1)}ms  substeps/frame ${subPerFrame.toFixed(0)}  particles ${parts}\n` +
+      `crossings ${E.totalCrossings()}  blocked steps ${E.fails}  forced ${E.forced || 0}  gen ${game.genMs.toFixed(0)}ms\n` +
+      Object.entries(E.failReasons).map(([k, v]) => `${k}:${v}`).join('  ');
+  } else dbgEl.textContent = '';
+}
+
+document.getElementById('new').onclick = newGame;
+document.getElementById('demo').onclick = startDemo;
+document.getElementById('dbgBtn').onclick = () => { debug = !debug; };
+window.addEventListener('resize', layout);
+
+window.T = {
+  generate, simulateMove, settle,
+  get E() { return E; },
+  get state() { return { phase, moves, view, active: E.active().length, crossings: E.totalCrossings(), fails: E.fails, forced: E.forced || 0 }; },
+  pegScreen(i) { const P = E.board.pegs[i]; return { x: view.ox + P.x * view.s, y: 48 + view.oy + P.y * view.s }; },
+  debugSeed(seed, n, k, solve) {
+    window.STOP_ON_FAIL = true;
+    let eng = null, g = null;
+    try {
+      g = generate(seed, n, k);
+      if (solve) for (const m of g.moves.slice().reverse()) simulateMove(g.E, m.r, m.e, m.from);
+    } catch (ex) { if (!ex.stop) throw ex; eng = ex.stop; }
+    window.STOP_ON_FAIL = false;
+    if (!eng) return 'no failure';
+    E = eng; game = { E, par: 0, genMs: 0, moves: [] }; paused = true; debug = true; phase = 'idle'; layout();
+    const topo = []; for (const a of E.topo.values()) for (const c of a) topo.push([c.a, c.b, 'over' + c.over, Math.round(c.x), Math.round(c.y), Math.round(c.ua), Math.round(c.ub)].join(','));
+    const geo = []; for (const a of E.failGeo.values()) for (const c of a) geo.push([c.a, c.b, Math.round(c.x), Math.round(c.y), Math.round(c.ua), Math.round(c.ub)].join(','));
+    return JSON.stringify({ reason: E.failReason, held: E.held, heldPos: E.failHeldPos, topo, geo, colors: E.ropes.map(r => r.color) });
+  },
+  show(eng) { E = eng; game = { E, par: 0, genMs: 0, moves: [] }; paused = true; phase = 'idle'; layout(); },
+  clusters(eng, rad) {
+    const cs = [];
+    for (const a of eng.topo.values()) for (const c of a) cs.push(c);
+    const out = [];
+    for (const c of cs) {
+      const near = cs.filter(d => Math.hypot(d.x - c.x, d.y - c.y) < rad);
+      const ropes = new Set();
+      for (const d of near) { ropes.add(d.a); ropes.add(d.b); }
+      out.push({ x: c.x, y: c.y, n: near.length, ropes: ropes.size });
+    }
+    out.sort((p, q) => q.ropes - p.ropes || q.n - p.n);
+    return out;
+  },
+  zoom(x, y, s) { view.s = s; view.ox = innerWidth / 2 - x * s; view.oy = (innerHeight - 48) / 2 - y * s; },
+  run(seeds, n, k) {
+    const rows = [];
+    for (const seed of seeds) {
+      const t0 = performance.now();
+      const g = generate(seed, n, k);
+      const t1 = performance.now();
+      const genFails = g.E.fails, genReasons = { ...g.E.failReasons };
+      const crossings = g.E.totalCrossings();
+      const zero = g.E.ropes.filter(r => g.E.crossingCount(r.id) === 0).length;
+      for (const m of g.moves.slice().reverse()) simulateMove(g.E, m.r, m.e, m.from);
+      rows.push({
+        seed, genMs: Math.round(t1 - t0), solveMs: Math.round(performance.now() - t1), moves: g.moves.length,
+        crossings, zero, genFails, solveFails: g.E.fails - genFails, stuck: g.E.stuckMoves || 0, forced: g.E.forced || 0,
+        remaining: g.E.totalCrossings(), reasons: g.E.failReasons, genReasons,
+      });
+    }
+    return rows;
+  },
+};
+
+layout();
+newGame();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
