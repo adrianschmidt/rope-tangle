@@ -31,13 +31,14 @@ canvas{position:fixed;top:48px;left:0;display:block}
 <div id="msg"></div>
 <script>
 'use strict';
+const Q = new URLSearchParams(location.search);
 const W = 12;
 const D = 16;
-const H0 = 6;
+const H0 = +Q.get('h0') || 8;
 const OMEGA = 0.5;
-const ITER = 8;
-const STEP = 3;
-const DMAX = 4;
+const ITER = +Q.get('iter') || 8;
+const STEP = +Q.get('step') || 3;
+const DMAX = +Q.get('dmax') || 4;
 const VMAX = 2.5;
 const DAMP = 0.9;
 const VREST = 0.8;
@@ -48,8 +49,11 @@ const POST_R = 25;
 const POST_H = 38;
 const LIFT = 45;
 const CLEARANCE = 38;
-const CELL = 16;
-const MARGIN = 3;
+const CELL = 32;
+const SELF_GAP = +Q.get('self') || 4;
+const WARM_EVERY = +Q.get('warm') || 2;
+const REFRESH = Q.get('refresh') !== '0';
+const MARGIN = +Q.get('margin') || 3;
 const COLORS = ['#2e9e3a', '#2f7fe0', '#e0453a', '#f0a020', '#8e44d0', '#18b3b3', '#e05fa8', '#8a5a33', '#b8a800', '#5c6b7a'];
 
 const pairKey = (a, b) => a < b ? a * 64 + b : b * 64 + a;
@@ -127,8 +131,20 @@ class Engine {
     this.maxSpeed = 0;
     this.substeps = 0;
     this.pairCount = 0;
-    this.monitorOn = true;
-    this.sigDirty = false;
+    this.monitorOn = false;
+    this.sigDirty = true;
+    this.segPool = [];
+    this.segN = 0;
+    this.blockTop = { x: 0, y: 0, z: 0 };
+    this.cellStart = new Int32Array(256);
+    this.cellFill = new Int32Array(256);
+    this.items = new Int32Array(4096);
+    this.cand = new Int32Array(8192);
+    this.candN = 0;
+    this.act = new Int32Array(4096);
+    this.actN = 0;
+    this.warm = new Int32Array(4096);
+    this.warmN = 0;
     this.drift = Infinity;
     this.winN = 0;
   }
@@ -154,8 +170,8 @@ class Engine {
 
   ensureSig() {
     if (!this.sigDirty) return;
-    const segs = this.collectSegs(this.active());
-    this.sig = this.signature(this.broadphase(segs));
+    this.collectSegs(this.active());
+    this.sig = this.signature();
     this.sigDirty = false;
   }
 
@@ -191,7 +207,7 @@ class Engine {
     const r = this.ropes[this.held.r], p = this.heldPt(), P = this.board.pegs[peg];
     r.ends[this.held.e] = peg;
     p.x = p.px = P.x; p.y = p.py = P.y;
-    this.landing.push(p);
+    this.landing.push({ p, peg, rope: r.id, wait: 0, top: { x: p.x, y: p.y, z: p.z + 400 } });
     this.held = null;
   }
 
@@ -225,6 +241,18 @@ class Engine {
     this.computeArc(r);
   }
 
+  holeClear(l) {
+    const P = this.board.pegs[l.peg], R2 = (POST_R - 2) * (POST_R - 2);
+    for (const r of this.ropes) {
+      if (r.cleared || r.id === l.rope) continue;
+      for (const q of r.pts) {
+        const dx = q.x - P.x, dy = q.y - P.y;
+        if (dx * dx + dy * dy < R2 && q.z < l.p.z) return false;
+      }
+    }
+    return true;
+  }
+
   holdHeight(p) {
     let m = 0;
     const hr = this.held.r;
@@ -252,8 +280,10 @@ class Engine {
       }
     }
     for (let i = this.landing.length - 1; i >= 0; i--) {
-      const p = this.landing[i];
-      p.pz = p.z; p.z = Math.max(0, p.z - STEP);
+      const l = this.landing[i], p = l.p;
+      p.pz = p.z;
+      if (l.wait < 40 && !this.holeClear(l)) { l.wait++; continue; }
+      p.z = Math.max(0, p.z - STEP);
       if (p.z === 0) this.landing.splice(i, 1);
     }
     for (const r of act) {
@@ -268,13 +298,14 @@ class Engine {
         q.x += vx; q.y += vy; q.z += vz;
       }
     }
-    const segs = this.collectSegs(act);
-    const cand = this.broadphase(segs);
-    const pairs = this.activePairs(cand);
+    this.collectSegs(act);
+    this.broadphase((D + MARGIN) / 2 + 1, true);
+    this.activePairs();
     const freeRope = this.held ? this.held.r : this.landing.length ? this.lastHeld : -1;
     const postC = this.postCandidates(act, freeRope);
     let minD = Infinity;
     for (let it = 0; it < ITER; it++) {
+      if (REFRESH && it === (ITER >> 1)) this.activePairs();
       for (const r of act) {
         const p = r.pts, n = p.length;
         if (it & 1) {
@@ -290,10 +321,16 @@ class Engine {
         }
       }
       this.applyPosts(postC);
-      minD = this.solveContacts(pairs);
+      minD = this.solveContacts(false);
+      if (it % WARM_EVERY === WARM_EVERY - 1) minD = Math.min(minD, this.solveContacts(true));
     }
     if (minD < this.minDist) this.minDist = minD;
     this.lastMinD = minD;
+    if (this.deepLog && minD < 9 && this.deepLog.length < 40) {
+      const sa = this.segPool[this.minPair], sb = this.segPool[this.minPairB];
+      const pegD = Math.min(...this.board.pegs.map(P => Math.hypot(P.x - sa.a.x, P.y - sa.a.y)));
+      this.deepLog.push({ step: this.substeps, d: +minD.toFixed(1), ra: sa.rope.id, ka: sa.k, na: sa.rope.pts.length, rb: sb.rope.id, kb: sb.k, nb: sb.rope.pts.length, held: this.held ? this.held.r + (this.held.lifted ? 'L' : 'u') : null, landing: this.landing.length, last: this.lastHeld, x: Math.round(sa.a.x), y: Math.round(sa.a.y), za: +sa.a.z.toFixed(0), zb: +sb.a.z.toFixed(0), pegD: Math.round(pegD) });
+    }
     let maxv = 0;
     for (const r of act) {
       const p = r.pts, n = p.length;
@@ -320,85 +357,125 @@ class Engine {
       }
       this.drift = dr;
     }
-    if (this.monitorOn) this.monitor(this.signature(cand)); else this.sigDirty = true;
+    if (this.monitorOn) { this.monitor(this.signature()); this.sigDirty = false; } else this.sigDirty = true;
     for (const r of act) if (r.h > 1.25 * H0 || r.h < 0.8 * H0 || r.maxSeg > 1.8 * H0) this.resample(r);
   }
 
   collectSegs(act) {
-    const segs = [];
+    const pool = this.segPool;
+    let n = 0;
+    const get = () => pool[n] || (pool[n] = { rope: null, k: 0, a: null, b: null, ima: 0, imb: 0, x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0, cx: 0, cy: 0, cx1: 0, cy1: 0 });
     for (const r of act) {
-      const p = r.pts, n = p.length;
-      for (let k = 0; k < n - 1; k++) {
-        segs.push({ rope: r, k, a: p[k], b: p[k + 1], ima: k === 0 ? 0 : r.h, imb: k === n - 2 ? 0 : r.h });
+      const p = r.pts, m = p.length, h = r.h;
+      for (let k = 0; k < m - 1; k++) {
+        const s = get();
+        s.rope = r; s.k = k; s.a = p[k]; s.b = p[k + 1]; s.ima = k === 0 ? 0 : h; s.imb = k === m - 2 ? 0 : h;
+        n++;
       }
     }
     if (this.held) {
-      const e = this.heldPt();
-      segs.push({ rope: this.ropes[this.held.r], k: -1, a: e, b: { x: e.x, y: e.y, z: e.z + 400 }, ima: 0, imb: 0 });
+      const e = this.heldPt(), top = this.blockTop, s = get();
+      top.x = e.x; top.y = e.y; top.z = e.z + 400;
+      s.rope = this.ropes[this.held.r]; s.k = -1; s.a = e; s.b = top; s.ima = 0; s.imb = 0;
+      n++;
     }
-    return segs;
+    for (const l of this.landing) {
+      const s = get();
+      l.top.z = l.p.z + 400;
+      s.rope = this.ropes[l.rope]; s.k = -1; s.a = l.p; s.b = l.top; s.ima = 0; s.imb = 0;
+      n++;
+    }
+    this.segN = n;
   }
 
-  broadphase(segs) {
-    const grid = new Map(), M = (D + MARGIN) / 2 + 1;
-    for (let i = 0; i < segs.length; i++) {
-      const s = segs[i], a = s.a, b = s.b;
-      s.x0 = Math.min(a.x, b.x) - M; s.x1 = Math.max(a.x, b.x) + M;
-      s.y0 = Math.min(a.y, b.y) - M; s.y1 = Math.max(a.y, b.y) + M;
-      const cx0 = Math.floor(s.x0 / CELL), cx1 = Math.floor(s.x1 / CELL), cy0 = Math.floor(s.y0 / CELL), cy1 = Math.floor(s.y1 / CELL);
-      for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
-        const key = (cx + 512) * 2048 + cy + 512;
-        let l = grid.get(key);
-        if (!l) grid.set(key, l = []);
-        l.push(i);
+  broadphase(M, useZ) {
+    const pool = this.segPool, n = this.segN;
+    let gx0 = Infinity, gy0 = Infinity, gx1 = -Infinity, gy1 = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const s = pool[i], a = s.a, b = s.b;
+      if (a.x < b.x) { s.x0 = a.x - M; s.x1 = b.x + M; } else { s.x0 = b.x - M; s.x1 = a.x + M; }
+      if (a.y < b.y) { s.y0 = a.y - M; s.y1 = b.y + M; } else { s.y0 = b.y - M; s.y1 = a.y + M; }
+      if (a.z < b.z) { s.z0 = a.z - M; s.z1 = b.z + M; } else { s.z0 = b.z - M; s.z1 = a.z + M; }
+      if (s.x0 < gx0) gx0 = s.x0; if (s.x1 > gx1) gx1 = s.x1;
+      if (s.y0 < gy0) gy0 = s.y0; if (s.y1 > gy1) gy1 = s.y1;
+    }
+    this.candN = 0;
+    if (!n) return;
+    const nx = Math.floor((gx1 - gx0) / CELL) + 1, ny = Math.floor((gy1 - gy0) / CELL) + 1, nc = nx * ny;
+    if (this.cellStart.length < nc + 1) { this.cellStart = new Int32Array(nc * 2 + 1); this.cellFill = new Int32Array(nc * 2 + 1); }
+    const start = this.cellStart, fill = this.cellFill;
+    start.fill(0, 0, nc + 1);
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+      const s = pool[i];
+      s.cx = Math.floor((s.x0 - gx0) / CELL); s.cx1 = Math.floor((s.x1 - gx0) / CELL);
+      s.cy = Math.floor((s.y0 - gy0) / CELL); s.cy1 = Math.floor((s.y1 - gy0) / CELL);
+      for (let cy = s.cy; cy <= s.cy1; cy++) for (let cx = s.cx; cx <= s.cx1; cx++) { start[cy * nx + cx + 1]++; total++; }
+    }
+    for (let c = 0; c < nc; c++) { start[c + 1] += start[c]; fill[c] = start[c]; }
+    if (this.items.length < total) this.items = new Int32Array(total * 2);
+    const items = this.items;
+    for (let i = 0; i < n; i++) {
+      const s = pool[i];
+      for (let cy = s.cy; cy <= s.cy1; cy++) for (let cx = s.cx; cx <= s.cx1; cx++) items[fill[cy * nx + cx]++] = i;
+    }
+    let cand = this.cand, cn = 0;
+    for (let c = 0; c < nc; c++) {
+      const e = start[c + 1], cxc = c % nx, cyc = (c - cxc) / nx;
+      for (let p = start[c]; p < e; p++) {
+        const i = items[p], si = pool[i];
+        for (let q = p + 1; q < e; q++) {
+          const j = items[q], sj = pool[j];
+          if (si.rope === sj.rope && (si.k < 0 || sj.k < 0 || sj.k - si.k < SELF_GAP)) continue;
+          if (si.x1 < sj.x0 || sj.x1 < si.x0 || si.y1 < sj.y0 || sj.y1 < si.y0) continue;
+          if (useZ && (si.z1 < sj.z0 || sj.z1 < si.z0)) continue;
+          if ((si.cx > sj.cx ? si.cx : sj.cx) !== cxc || (si.cy > sj.cy ? si.cy : sj.cy) !== cyc) continue;
+          if (cn + 2 > cand.length) { const g = new Int32Array(cand.length * 2); g.set(cand); cand = this.cand = g; }
+          cand[cn++] = i; cand[cn++] = j;
+        }
       }
     }
-    const seen = new Set(), pairs = [];
-    for (const l of grid.values()) {
-      const m = l.length;
-      for (let i = 0; i < m; i++) for (let j = i + 1; j < m; j++) {
-        const sa = segs[l[i]], sb = segs[l[j]];
-        if (sa.rope === sb.rope) continue;
-        if (sa.x1 < sb.x0 || sb.x1 < sa.x0 || sa.y1 < sb.y0 || sb.y1 < sa.y0) continue;
-        const code = l[i] * 8192 + l[j];
-        if (seen.has(code)) continue;
-        seen.add(code);
-        pairs.push(sa, sb);
-      }
-    }
-    this.pairCount = pairs.length / 2;
-    return pairs;
+    this.candN = cn;
+    this.pairCount = cn / 2;
   }
 
-  activePairs(cand) {
-    const out = [], lim = D + MARGIN;
-    for (let i = 0; i < cand.length; i += 2) {
-      const sa = cand[i], sb = cand[i + 1];
+  activePairs() {
+    const pool = this.segPool, cand = this.cand, cn = this.candN, lim2 = (D + MARGIN) * (D + MARGIN);
+    if (this.act.length < cn) { this.act = new Int32Array(cn * 2); this.warm = new Int32Array(cn * 2); }
+    const act = this.act, warm = this.warm, hot2 = (D + 1) * (D + 1);
+    let an = 0, wn = 0;
+    for (let i = 0; i < cn; i += 2) {
+      const sa = pool[cand[i]], sb = pool[cand[i + 1]];
       const a1 = sa.a, a2 = sa.b, b1 = sb.a, b2 = sb.b;
       closestSegSeg(a1, a2, b1, b2);
       const s = CP.s, t = CP.t;
       const nx = a1.x + (a2.x - a1.x) * s - b1.x - (b2.x - b1.x) * t;
       const ny = a1.y + (a2.y - a1.y) * s - b1.y - (b2.y - b1.y) * t;
       const nz = a1.z + (a2.z - a1.z) * s - b1.z - (b2.z - b1.z) * t;
-      if (nx * nx + ny * ny + nz * nz < lim * lim) out.push(sa, sb);
+      const d2 = nx * nx + ny * ny + nz * nz;
+      if (d2 < hot2) { act[an++] = cand[i]; act[an++] = cand[i + 1]; }
+      else if (d2 < lim2) { warm[wn++] = cand[i]; warm[wn++] = cand[i + 1]; }
     }
-    this.activeCount = out.length / 2;
-    return out;
+    this.actN = an;
+    this.warmN = wn;
+    this.activeCount = an / 2;
   }
 
-  solveContacts(pairs) {
+  solveContacts(useWarm) {
+    const pool = this.segPool, act = useWarm ? this.warm : this.act, an = useWarm ? this.warmN : this.actN;
     let minD = Infinity;
-    for (let i = 0; i < pairs.length; i += 2) {
-      const sa = pairs[i], sb = pairs[i + 1];
+    for (let i = 0; i < an; i += 2) {
+      const sa = pool[act[i]], sb = pool[act[i + 1]];
       const a1 = sa.a, a2 = sa.b, b1 = sb.a, b2 = sb.b;
       closestSegSeg(a1, a2, b1, b2);
       const s = CP.s, t = CP.t;
       let nx = a1.x + (a2.x - a1.x) * s - b1.x - (b2.x - b1.x) * t;
       let ny = a1.y + (a2.y - a1.y) * s - b1.y - (b2.y - b1.y) * t;
       let nz = a1.z + (a2.z - a1.z) * s - b1.z - (b2.z - b1.z) * t;
-      const d = Math.hypot(nx, ny, nz);
-      if (d < minD) minD = d;
-      if (d >= D) continue;
+      const d2 = nx * nx + ny * ny + nz * nz;
+      if (d2 >= D * D) { if (d2 < minD) minD = d2; continue; }
+      const d = Math.sqrt(d2);
+      if (d2 < minD) { minD = d2; this.minPair = act[i]; this.minPairB = act[i + 1]; }
       if (d < 1e-6) { nx = 0; ny = 0; nz = a1.z + a2.z >= b1.z + b2.z ? 1 : -1; }
       else { nx /= d; ny /= d; nz /= d; }
       const wa1 = (1 - s) * sa.ima, wa2 = s * sa.imb, wb1 = (1 - t) * sb.ima, wb2 = t * sb.imb;
@@ -410,7 +487,7 @@ class Engine {
       b1.x -= nx * lam * wb1; b1.y -= ny * lam * wb1; b1.z -= nz * lam * wb1;
       b2.x -= nx * lam * wb2; b2.y -= ny * lam * wb2; b2.z -= nz * lam * wb2;
     }
-    return minD;
+    return Math.sqrt(minD);
   }
 
   postCandidates(act, freeRope) {
@@ -446,19 +523,21 @@ class Engine {
       t = t < 0 ? 0 : t > 200 ? 200 : t;
       const rx = q.x - P.x - P.ox * t, ry = q.y - P.y - P.oy * t, d = Math.hypot(rx, ry);
       if (d >= R) continue;
-      const pen = R - d;
+      const pen = R - d, push = pen < 2 ? pen : 2;
       let dx = rx - P.ox * pen * 0.5, dy = ry - P.oy * pen * 0.5;
       const l = Math.hypot(dx, dy);
       if (l < 1e-9) { dx = -P.ox; dy = -P.oy; } else { dx /= l; dy /= l; }
-      q.x += dx * pen; q.y += dy * pen;
+      q.x += dx * push; q.y += dy * push;
     }
   }
 
-  signature(pairs) {
+  signature() {
     const sig = new Map();
-    for (let i = 0; i < pairs.length; i += 2) {
-      let sa = pairs[i], sb = pairs[i + 1];
-      if (sa.k < 0 || sb.k < 0) continue;
+    this.broadphase(1, false);
+    const pool = this.segPool, cand = this.cand, cn = this.candN;
+    for (let i = 0; i < cn; i += 2) {
+      let sa = pool[cand[i]], sb = pool[cand[i + 1]];
+      if (sa.k < 0 || sb.k < 0 || sa.rope === sb.rope) continue;
       if (sa.rope.id > sb.rope.id) { const t = sa; sa = sb; sb = t; }
       const hit = segX(sa.a, sa.b, sb.a, sb.b);
       if (!hit) continue;
@@ -516,11 +595,12 @@ class Engine {
     this.sig = sig;
   }
 
-  clearFree() {
+  clearFree(minStreak) {
     const cleared = [];
     for (const r of this.active()) {
-      if (r.ends[0] == null || r.ends[1] == null) continue;
-      if (this.crossingCount(r.id) === 0) { r.cleared = true; r.fade = 1; cleared.push(r.id); }
+      if (r.ends[0] == null || r.ends[1] == null || this.crossingCount(r.id) > 0) { r.zeroN = 0; continue; }
+      r.zeroN = (r.zeroN || 0) + 1;
+      if (r.zeroN >= minStreak) { r.cleared = true; r.fade = 1; cleared.push(r.id); }
     }
     return cleared;
   }
@@ -595,7 +675,7 @@ function generate(seed, nRopes, kMoves, monitor) {
     doMove(zero[Math.floor(rand() * zero.length)].id);
   }
   settle(E);
-  E.monitorOn = true;
+  E.monitorOn = !!monitor;
   E.ensureSig();
   return { E, moves, par: moves.length };
 }
@@ -605,9 +685,10 @@ function generate(seed, nRopes, kMoves, monitor) {
 const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
 const info = document.getElementById('info'), dbgEl = document.getElementById('dbg'), msgEl = document.getElementById('msg');
 let E = null, game = null, phase = 'idle', pointer = null, dragPath = [], queue = [], targetPeg = null, heldFrom = null;
-let paused = false;
+let paused = false, dropTarget = null;
 let moves = 0, settleN = 0, debug = false, demo = null, view = { s: 1, ox: 0, oy: 0 }, dpr = 1, frameMs = 0, subPerFrame = 0, runCount = 0;
-const MAXSUB = 40, IDLE_SUB = 10, FRAME_MS = 9;
+const MAXSUB = 60, IDLE_SUB = 10;
+let physMs = 0, renderMs = 0, subMs = 0, budgetMs = 8;
 
 function newGame() {
   msgEl.style.display = 'none';
@@ -616,12 +697,13 @@ function newGame() {
   game = generate((Math.random() * 2 ** 31) | 0, n, n);
   game.genMs = performance.now() - t0;
   E = game.E;
+  E.monitorOn = debug;
   moves = 0; phase = 'idle'; demo = null; queue = []; paused = false;
   layout();
 }
 
 function layout() {
-  dpr = window.devicePixelRatio || 1;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
   const cw = window.innerWidth, ch = window.innerHeight - 48;
   cv.width = cw * dpr; cv.height = ch * dpr; cv.style.width = cw + 'px'; cv.style.height = ch + 'px';
   if (!E) return;
@@ -679,8 +761,8 @@ cv.addEventListener('pointermove', ev => {
 const release = () => {
   if (phase !== 'held') return;
   const peg = freePegNear(pointer, PEG_R * 1.6);
-  if (peg != null) { queue = [{ ...pointer }, { ...E.board.pegs[peg] }]; targetPeg = peg; }
-  else { queue = dragPath.slice().reverse(); targetPeg = heldFrom; }
+  if (peg != null) { queue = [{ ...pointer }, { ...E.board.pegs[peg] }]; targetPeg = peg; dropTarget = { ...E.board.pegs[peg] }; }
+  else { queue = dragPath.slice().reverse(); targetPeg = heldFrom; dropTarget = null; }
   phase = 'moving';
 };
 cv.addEventListener('pointerup', release);
@@ -690,13 +772,24 @@ function advance(target, budget) {
   let used = 0;
   const t0 = performance.now();
   while (used < budget) {
-    if ((used & 3) === 3 && performance.now() - t0 > FRAME_MS) break;
+    if (used >= 2 && performance.now() - t0 > budgetMs) break;
     const c = E.heldPt();
     if (E.held.lifted && Math.hypot(target.x - c.x, target.y - c.y) < 1e-3) return { reached: true, used };
     E.substep(target);
     used++;
   }
   return { reached: false, used };
+}
+
+function relax(target) {
+  const t0 = performance.now();
+  let used = 0;
+  while (used < IDLE_SUB) {
+    if (used >= 2 && performance.now() - t0 > budgetMs) break;
+    E.substep(target);
+    used++;
+  }
+  return used;
 }
 
 function startDemo() {
@@ -729,7 +822,7 @@ function tick() {
     if (phase === 'held') {
       const r = advance(pointer, MAXSUB);
       subs += r.used;
-      if (r.reached) for (let i = 0; i < IDLE_SUB; i++) { E.substep(pointer); subs++; }
+      if (r.reached) subs += relax(pointer);
     } else if (phase === 'moving') {
       let budget = demo ? 12 : MAXSUB;
       while (queue.length && budget > 0) {
@@ -743,18 +836,23 @@ function tick() {
         phase = 'settling'; settleN = 0; E.drift = Infinity; E.winN = 0;
       }
     } else if (phase === 'settling') {
-      for (let i = 0; i < IDLE_SUB; i++) E.substep(null);
-      subs += IDLE_SUB;
+      subs += relax(null);
       settleN++;
-      if (!E.landing.length && (E.drift < 0.15 || settleN > 150)) {
-        E.clearFree();
-        phase = 'idle';
-        if (!E.active().length) showWin();
-        else if (demo) nextDemo();
+      if (!E.landing.length) {
+        const done = E.drift < 0.15 || settleN > 240;
+        if (E.clearFree(done ? 1 : 4).length) { E.drift = Infinity; E.winN = 0; settleN = 0; }
+        else if (done) { phase = 'idle'; if (demo) nextDemo(); }
+        if (!E.active().length) { phase = 'idle'; showWin(); }
       }
     }
     for (const r of E.ropes) if (r.cleared && r.fade > 0) r.fade = Math.max(0, r.fade - 0.05);
+    const t1 = performance.now();
     render();
+    const t2 = performance.now();
+    physMs = physMs * 0.9 + (t1 - t0) * 0.1;
+    renderMs = renderMs * 0.9 + (t2 - t1) * 0.1;
+    if (subs) subMs = subMs * 0.9 + (t1 - t0) / subs * 0.1;
+    budgetMs = Math.max(4, Math.min(11, 14 - renderMs));
   }
   frameMs = frameMs * 0.9 + (performance.now() - t0) * 0.1;
   subPerFrame = subPerFrame * 0.9 + subs * 0.1;
@@ -826,8 +924,16 @@ function render() {
   const act = E.active();
   drawRopes(act);
   for (const r of act) for (const e of [0, 1]) {
-    const p = r.pts[E.endIndex(r, e)];
+    let p = r.pts[E.endIndex(r, e)];
     const held = E.held && E.held.r === r.id && E.held.e === e;
+    const handle = !held || demo ? null : phase === 'held' ? pointer : phase === 'moving' ? dropTarget : null;
+    if (handle && Math.hypot(handle.x - p.x, handle.y - p.y) > 1) {
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(handle.x, handle.y);
+      ctx.strokeStyle = '#1d2230'; ctx.lineWidth = W + 3; ctx.stroke();
+      ctx.strokeStyle = r.color; ctx.lineWidth = W; ctx.stroke();
+      p = handle;
+    }
     ctx.beginPath(); ctx.arc(p.x, p.y, held ? PEG_R * 0.95 : W * 0.75, 0, Math.PI * 2);
     if (held) { ctx.shadowColor = '#0006'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 4; }
     ctx.fillStyle = r.color; ctx.fill();
@@ -844,7 +950,8 @@ function render() {
   info.textContent = `Moves ${moves} · Par ${game.par}` + (E.active().length ? '' : ' ✓');
   if (debug) {
     const parts = E.active().reduce((n, r) => n + r.pts.length, 0);
-    dbgEl.textContent = `frame ${frameMs.toFixed(1)}ms  substeps/frame ${subPerFrame.toFixed(0)}  particles ${parts}  pairs ${E.pairCount}  runs ${runCount}\n` +
+    dbgEl.textContent = `frame ${frameMs.toFixed(1)}ms = physics ${physMs.toFixed(1)} + draw ${renderMs.toFixed(1)}   steps/frame ${subPerFrame.toFixed(0)}   ${subMs.toFixed(2)}ms/step\n` +
+      `particles ${parts}  contacts ${E.activeCount}  runs ${runCount}  dpr ${dpr}\n` +
       `crossings ${E.totalCrossings()}  min gap ${E.minDist.toFixed(1)}  flags ${E.flagCount}  gen ${(game.genMs || 0).toFixed(0)}ms\n` +
       Object.entries(E.flags).map(([k, v]) => `${k}:${v}`).join('  ');
   } else dbgEl.textContent = '';
@@ -852,7 +959,7 @@ function render() {
 
 document.getElementById('new').onclick = newGame;
 document.getElementById('demo').onclick = startDemo;
-document.getElementById('dbgBtn').onclick = () => { debug = !debug; };
+document.getElementById('dbgBtn').onclick = () => { debug = !debug; if (E) { E.ensureSig(); E.monitorOn = debug; } };
 window.addEventListener('resize', layout);
 
 window.T = {
@@ -861,9 +968,9 @@ window.T = {
   get state() { return { phase, moves, view, active: E.active().length, crossings: E.totalCrossings(), flags: E.flags, minDist: E.minDist, landing: E.landing.length }; },
   pegScreen(i) { const P = E.board.pegs[i]; return { x: view.ox + P.x * view.s, y: 48 + view.oy + P.y * view.s }; },
   show(eng, par) { E = eng; game = { E, par: par || 0, genMs: 0, moves: [] }; paused = true; phase = 'idle'; layout(); },
-  play(g) { E = g.E; game = g; paused = false; phase = 'idle'; moves = 0; layout(); },
+  play(g) { E = g.E; game = g; E.monitorOn = debug; paused = false; phase = 'idle'; moves = 0; layout(); },
   zoom(x, y, s) { view.s = s; view.ox = innerWidth / 2 - x * s; view.oy = (innerHeight - 48) / 2 - y * s; },
-  setDebug(v) { debug = v; },
+  setDebug(v) { debug = v; if (E) { E.ensureSig(); E.monitorOn = v; } },
   tightest(eng) {
     const cs = [];
     for (const a of eng.sig.values()) for (const c of a) cs.push(c);
