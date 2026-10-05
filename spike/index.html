@@ -53,6 +53,7 @@ const CELL = 32;
 const SELF_GAP = +Q.get('self') || 4;
 const WARM_EVERY = +Q.get('warm') || 2;
 const REFRESH = Q.get('refresh') !== '0';
+const SMART = Q.get('scr') !== '0';
 const MARGIN = +Q.get('margin') || 3;
 const COLORS = ['#2e9e3a', '#2f7fe0', '#e0453a', '#f0a020', '#8e44d0', '#18b3b3', '#e05fa8', '#8a5a33', '#b8a800', '#5c6b7a'];
 
@@ -122,6 +123,8 @@ class Engine {
     this.board = makeBoard(cols, rows);
     this.ropes = [];
     this.held = null;
+    this.flying = [];
+    this.freeIds = new Set();
     this.landing = [];
     this.lastHeld = -1;
     this.sig = new Map();
@@ -196,19 +199,52 @@ class Engine {
     this.lastHeld = rid;
   }
 
-  heldPt() {
-    const r = this.ropes[this.held.r];
-    return r.pts[this.endIndex(r, this.held.e)];
+  endPt(h) {
+    const r = this.ropes[h.r];
+    return r.pts[this.endIndex(r, h.e)];
   }
+
+  heldPt() { return this.endPt(this.held); }
 
   heldPos() { const p = this.heldPt(); return { x: p.x, y: p.y }; }
 
-  attach(peg) {
-    const r = this.ropes[this.held.r], p = this.heldPt(), P = this.board.pegs[peg];
-    r.ends[this.held.e] = peg;
+  land(h, peg) {
+    const r = this.ropes[h.r], p = this.endPt(h), P = this.board.pegs[peg];
+    r.ends[h.e] = peg;
     p.x = p.px = P.x; p.y = p.py = P.y;
     this.landing.push({ p, peg, rope: r.id, wait: 0, top: { x: p.x, y: p.y, z: p.z + 400 } });
+  }
+
+  attach(peg) {
+    this.land(this.held, peg);
     this.held = null;
+  }
+
+  release(path, peg, tether) {
+    const h = this.held;
+    this.flying.push({ r: h.r, e: h.e, from: h.from, lifted: h.lifted, path, peg, tether, top: { x: 0, y: 0, z: 0 } });
+    this.held = null;
+  }
+
+  busy() { return this.flying.length > 0 || this.landing.length > 0; }
+
+  busyRopes() {
+    const s = new Set();
+    for (const f of this.flying) s.add(f.r);
+    for (const l of this.landing) s.add(l.rope);
+    return s;
+  }
+
+  driveEnd(h, target) {
+    const p = this.endPt(h);
+    p.px = p.x; p.py = p.y; p.pz = p.z;
+    const zt = this.holdHeight(p, h.r);
+    p.z = p.z < zt ? Math.min(zt, p.z + STEP) : Math.max(zt, p.z - STEP);
+    if (!h.lifted && p.z >= LIFT - 1e-9) h.lifted = true;
+    if (h.lifted && target) {
+      const dx = target.x - p.x, dy = target.y - p.y, d = Math.hypot(dx, dy);
+      if (d > 1e-9) { const s = Math.min(STEP, d); p.x += dx / d * s; p.y += dy / d * s; }
+    }
   }
 
   computeArc(r) {
@@ -253,9 +289,8 @@ class Engine {
     return true;
   }
 
-  holdHeight(p) {
+  holdHeight(p, hr) {
     let m = 0;
-    const hr = this.held.r;
     for (const r of this.ropes) {
       if (r.cleared || r.id === hr) continue;
       for (const q of r.pts) {
@@ -268,15 +303,14 @@ class Engine {
   substep(target) {
     this.substeps++;
     const act = this.active();
-    if (this.held) {
-      const p = this.heldPt();
-      p.px = p.x; p.py = p.y; p.pz = p.z;
-      const zt = this.holdHeight(p);
-      p.z = p.z < zt ? Math.min(zt, p.z + STEP) : Math.max(zt, p.z - STEP);
-      if (!this.held.lifted && p.z >= LIFT - 1e-9) this.held.lifted = true;
-      if (this.held.lifted && target) {
-        const dx = target.x - p.x, dy = target.y - p.y, d = Math.hypot(dx, dy);
-        if (d > 1e-9) { const s = Math.min(STEP, d); p.x += dx / d * s; p.y += dy / d * s; }
+    if (this.held) this.driveEnd(this.held, target);
+    for (let i = this.flying.length - 1; i >= 0; i--) {
+      const f = this.flying[i], T = f.path[0];
+      this.driveEnd(f, T);
+      const p = this.endPt(f);
+      if (f.lifted && Math.hypot(T.x - p.x, T.y - p.y) < 1e-6) {
+        f.path.shift();
+        if (!f.path.length) { this.land(f, f.peg); this.flying.splice(i, 1); }
       }
     }
     for (let i = this.landing.length - 1; i >= 0; i--) {
@@ -301,8 +335,12 @@ class Engine {
     this.collectSegs(act);
     this.broadphase((D + MARGIN) / 2 + 1, true);
     this.activePairs();
-    const freeRope = this.held ? this.held.r : this.landing.length ? this.lastHeld : -1;
-    const postC = this.postCandidates(act, freeRope);
+    const free = this.freeIds;
+    free.clear();
+    if (this.held) free.add(this.held.r);
+    for (const f of this.flying) free.add(f.r);
+    for (const l of this.landing) free.add(l.rope);
+    const postC = this.postCandidates(act, free);
     let minD = Infinity;
     for (let it = 0; it < ITER; it++) {
       if (REFRESH && it === (ITER >> 1)) this.activePairs();
@@ -377,6 +415,12 @@ class Engine {
       const e = this.heldPt(), top = this.blockTop, s = get();
       top.x = e.x; top.y = e.y; top.z = e.z + 400;
       s.rope = this.ropes[this.held.r]; s.k = -1; s.a = e; s.b = top; s.ima = 0; s.imb = 0;
+      n++;
+    }
+    for (const f of this.flying) {
+      const e = this.endPt(f), top = f.top, s = get();
+      top.x = e.x; top.y = e.y; top.z = e.z + 400;
+      s.rope = this.ropes[f.r]; s.k = -1; s.a = e; s.b = top; s.ima = 0; s.imb = 0;
       n++;
     }
     for (const l of this.landing) {
@@ -490,19 +534,22 @@ class Engine {
     return Math.sqrt(minD);
   }
 
-  postCandidates(act, freeRope) {
+  postCandidates(act, freeSet) {
     const pegs = this.board.pegs, bw = this.board.w, bh = this.board.h, R = POST_R + DMAX + 2;
     const posts = [...this.occupied()];
-    if (this.held && !this.held.lifted) posts.push(this.held.from);
+    const fromOf = new Map();
+    if (this.held && !this.held.lifted) fromOf.set(this.held.r, this.held.from);
+    for (const f of this.flying) if (!f.lifted) fromOf.set(f.r, f.from);
+    for (const pi of fromOf.values()) if (!posts.includes(pi)) posts.push(pi);
     const out = [];
     for (const r of act) {
-      const p = r.pts, n = p.length, free = r.id === freeRope;
+      const p = r.pts, n = p.length, free = freeSet.has(r.id), skip = fromOf.get(r.id);
       for (let i = 1; i < n - 1; i++) {
         const q = p[i];
         if (q.x > R && q.x < bw - R && q.y > R && q.y < bh - R) continue;
         for (const pi of posts) {
           if (pi === r.ends[0] || pi === r.ends[1]) continue;
-          if (free && this.held && pi === this.held.from) continue;
+          if (pi === skip) continue;
           const P = pegs[pi];
           let t = (q.x - P.x) * P.ox + (q.y - P.y) * P.oy;
           t = t < 0 ? 0 : t > 200 ? 200 : t;
@@ -567,15 +614,15 @@ class Engine {
 
   legalEdit(O, N) {
     const n = O.length, m = N.length, memo = new Map();
-    const free = this.held ? this.held.r : this.lastHeld;
+    const ids = this.freeIds.size ? this.freeIds : new Set([this.lastHeld]);
     const go = (i, j) => {
       if (i === n && j === m) return true;
       const key = i * 64 + j;
       if (memo.has(key)) return memo.get(key);
       let ok = false;
       if (i < n && j < m && O[i].over === N[j].over) ok = go(i + 1, j + 1);
-      if (!ok && i < n && O[i].over === free) ok = go(i + 1, j);
-      if (!ok && j < m && N[j].over === free) ok = go(i, j + 1);
+      if (!ok && i < n && ids.has(O[i].over)) ok = go(i + 1, j);
+      if (!ok && j < m && ids.has(N[j].over)) ok = go(i, j + 1);
       if (!ok && i + 1 < n && O[i].over === O[i + 1].over) ok = go(i + 2, j);
       if (!ok && j + 1 < m && N[j].over === N[j + 1].over) ok = go(i, j + 2);
       memo.set(key, ok);
@@ -616,7 +663,7 @@ function settle(E, max = 800, eps = 0.1) {
   E.drift = Infinity; E.winN = 0;
   for (let i = 0; i < max; i++) {
     E.substep(null);
-    if (E.drift < eps && !E.landing.length) return i;
+    if (E.drift < eps && !E.busy()) return i;
   }
   E.unsettled = (E.unsettled || 0) + 1;
   return max;
@@ -660,15 +707,46 @@ function generate(seed, nRopes, kMoves, monitor) {
   settle(E);
   E.flags = {}; E.flagCount = 0;
   const moves = [];
-  const doMove = rid => {
-    const r = E.ropes[rid], e = rand() < 0.5 ? 0 : 1;
+  const interleave = (a, b, c, d) => {
+    const lo = Math.min(a, b), hi = Math.max(a, b);
+    return (c > lo && c < hi) !== (d > lo && d < hi);
+  };
+  let lastRope = -1;
+  const doMove = forced => {
     const occ = E.occupied();
     const free = [...Array(M).keys()].filter(p => !occ.has(p));
-    const to = free[Math.floor(rand() * free.length)];
+    const underOf = new Set(), overOf = new Set();
+    if (SMART) {
+      E.ensureSig();
+      for (const arr of E.sig.values()) for (const c of arr) {
+        const u = c.over === c.a ? c.b : c.a;
+        underOf.add(u * 64 + c.over); overOf.add(c.over * 64 + u);
+      }
+    }
+    let best = null;
+    for (let t = 0; t < (SMART ? 30 : 1); t++) {
+      const rid = forced != null ? forced : Math.floor(rand() * nRopes);
+      const e = rand() < 0.5 ? 0 : 1, to = free[Math.floor(rand() * free.length)];
+      if (SMART && forced == null && rid === lastRope && t < 29) continue;
+      const r = E.ropes[rid];
+      let score = rand() * 1.5;
+      for (const o of E.ropes) {
+        if (o.id === rid) continue;
+        const was = interleave(r.ends[1 - e], r.ends[e], o.ends[0], o.ends[1]);
+        const now = interleave(r.ends[1 - e], to, o.ends[0], o.ends[1]);
+        if (was === now) continue;
+        if (underOf.has(rid * 64 + o.id)) score += 3;
+        else if (overOf.has(rid * 64 + o.id)) score -= 1;
+        else score += 1;
+      }
+      if (!best || score > best.score) best = { rid, e, to, score };
+    }
+    const rid = best.rid, e = best.e, to = best.to, r = E.ropes[rid];
+    lastRope = rid;
     moves.push({ r: rid, e, from: r.ends[e], to });
     simulateMove(E, rid, e, to, true);
   };
-  for (let m = 0; m < kMoves; m++) doMove(Math.floor(rand() * nRopes));
+  for (let m = 0; m < kMoves; m++) doMove(null);
   for (let extra = 0; extra < 3 * nRopes; extra++) {
     const zero = E.ropes.filter(r => E.crossingCount(r.id) === 0);
     if (!zero.length) break;
@@ -723,6 +801,7 @@ function clampBoard(p) {
 
 function freePegNear(p, rad) {
   const occ = E.occupied();
+  for (const f of E.flying) occ.add(f.peg);
   let best = null, bd = rad * rad;
   E.board.pegs.forEach((P, i) => {
     if (occ.has(i)) return;
@@ -733,37 +812,39 @@ function freePegNear(p, rad) {
 }
 
 cv.addEventListener('pointerdown', ev => {
-  if (!E || demo || paused || (phase !== 'idle' && phase !== 'settling') || E.landing.length) return;
-  const p = toBoard(ev);
+  if (!E || demo || paused || phase === 'held') return;
+  const p = toBoard(ev), busy = E.busyRopes();
   let best = null, bd = (PEG_R * 1.5) ** 2;
-  for (const r of E.active()) for (const e of [0, 1]) {
-    const peg = r.ends[e];
-    if (peg == null) continue;
-    const P = E.board.pegs[peg], d = (P.x - p.x) ** 2 + (P.y - p.y) ** 2;
-    if (d < bd) { bd = d; best = [r.id, e, peg]; }
+  for (const r of E.active()) {
+    if (busy.has(r.id)) continue;
+    for (const e of [0, 1]) {
+      const peg = r.ends[e];
+      if (peg == null) continue;
+      const P = E.board.pegs[peg], d = (P.x - p.x) ** 2 + (P.y - p.y) ** 2;
+      if (d < bd) { bd = d; best = [r.id, e, peg]; }
+    }
   }
   if (!best) return;
   cv.setPointerCapture(ev.pointerId);
   E.grab(best[0], best[1]);
   heldFrom = best[2];
   pointer = clampBoard(p);
-  dragPath = [{ ...E.board.pegs[heldFrom] }];
   phase = 'held';
 });
 
 cv.addEventListener('pointermove', ev => {
   if (phase !== 'held') return;
   pointer = clampBoard(toBoard(ev));
-  const l = dragPath[dragPath.length - 1];
-  if (Math.hypot(pointer.x - l.x, pointer.y - l.y) > 3) dragPath.push({ ...pointer });
 });
+
+const startBusy = () => { phase = 'busy'; settleN = 0; E.drift = Infinity; E.winN = 0; };
 
 const release = () => {
   if (phase !== 'held') return;
-  const peg = freePegNear(pointer, PEG_R * 1.6);
-  if (peg != null) { queue = [{ ...pointer }, { ...E.board.pegs[peg] }]; targetPeg = peg; dropTarget = { ...E.board.pegs[peg] }; }
-  else { queue = dragPath.slice().reverse(); targetPeg = heldFrom; dropTarget = null; }
-  phase = 'moving';
+  const peg = freePegNear(pointer, Infinity);
+  E.release([{ ...pointer }, { ...E.board.pegs[peg] }], peg, true);
+  if (peg !== heldFrom) moves++;
+  startBusy();
 };
 cv.addEventListener('pointerup', release);
 cv.addEventListener('pointercancel', release);
@@ -782,9 +863,9 @@ function advance(target, budget) {
 }
 
 function relax(target) {
-  const t0 = performance.now();
+  const t0 = performance.now(), max = E.flying.length ? MAXSUB : IDLE_SUB;
   let used = 0;
-  while (used < IDLE_SUB) {
+  while (used < max) {
     if (used >= 2 && performance.now() - t0 > budgetMs) break;
     E.substep(target);
     used++;
@@ -805,10 +886,8 @@ function nextDemo() {
     const r = E.ropes[m.r];
     if (r.cleared || r.ends[m.e] !== m.to) continue;
     E.grab(m.r, m.e);
-    heldFrom = m.to;
-    queue = [insetPoint(E, E.board.pegs[m.to], 24), insetPoint(E, E.board.pegs[m.from], 24), { ...E.board.pegs[m.from] }];
-    targetPeg = m.from;
-    phase = 'moving';
+    E.release([insetPoint(E, E.board.pegs[m.to], 24), insetPoint(E, E.board.pegs[m.from], 24), { ...E.board.pegs[m.from] }], m.from, false);
+    startBusy();
     return;
   }
   demo = null;
@@ -823,22 +902,10 @@ function tick() {
       const r = advance(pointer, MAXSUB);
       subs += r.used;
       if (r.reached) subs += relax(pointer);
-    } else if (phase === 'moving') {
-      let budget = demo ? 12 : MAXSUB;
-      while (queue.length && budget > 0) {
-        const r = advance(queue[0], budget);
-        budget -= r.used; subs += r.used;
-        if (r.reached) queue.shift(); else break;
-      }
-      if (!queue.length) {
-        E.attach(targetPeg);
-        if (targetPeg !== heldFrom) moves++;
-        phase = 'settling'; settleN = 0; E.drift = Infinity; E.winN = 0;
-      }
-    } else if (phase === 'settling') {
+    } else if (phase === 'busy') {
       subs += relax(null);
       settleN++;
-      if (!E.landing.length) {
+      if (!E.busy()) {
         const done = E.drift < 0.15 || settleN > 240;
         if (E.clearFree(done ? 1 : 4).length) { E.drift = Infinity; E.winN = 0; settleN = 0; }
         else if (done) { phase = 'idle'; if (demo) nextDemo(); }
@@ -912,7 +979,7 @@ function render() {
   ctx.setTransform(dpr * view.s, 0, 0, dpr * view.s, dpr * view.ox, dpr * view.oy);
   const occ = new Map();
   for (const r of E.active()) r.ends.forEach(p => { if (p != null) occ.set(p, r); });
-  const hover = phase === 'held' ? freePegNear(pointer, PEG_R * 1.6) : null;
+  const hover = phase === 'held' ? freePegNear(pointer, Infinity) : null;
   E.board.pegs.forEach((P, i) => {
     ctx.beginPath(); ctx.arc(P.x, P.y, PEG_R, 0, Math.PI * 2);
     if (occ.has(i)) { ctx.fillStyle = occ.get(i).color; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = '#1d2230'; ctx.stroke(); }
@@ -925,14 +992,16 @@ function render() {
   drawRopes(act);
   for (const r of act) for (const e of [0, 1]) {
     let p = r.pts[E.endIndex(r, e)];
-    const held = E.held && E.held.r === r.id && E.held.e === e;
-    const handle = !held || demo ? null : phase === 'held' ? pointer : phase === 'moving' ? dropTarget : null;
-    if (handle && Math.hypot(handle.x - p.x, handle.y - p.y) > 1) {
-      ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(handle.x, handle.y);
+    const fly = E.flying.find(f => f.r === r.id && f.e === e);
+    const held = !!fly || (E.held && E.held.r === r.id && E.held.e === e);
+    const way = fly ? (fly.tether ? fly.path : null) : held && phase === 'held' ? [pointer] : null;
+    if (way && Math.hypot(way[way.length - 1].x - p.x, way[way.length - 1].y - p.y) > 1) {
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath(); ctx.moveTo(p.x, p.y);
+      for (const w of way) ctx.lineTo(w.x, w.y);
       ctx.strokeStyle = '#1d2230'; ctx.lineWidth = W + 3; ctx.stroke();
       ctx.strokeStyle = r.color; ctx.lineWidth = W; ctx.stroke();
-      p = handle;
+      p = way[way.length - 1];
     }
     ctx.beginPath(); ctx.arc(p.x, p.y, held ? PEG_R * 0.95 : W * 0.75, 0, Math.PI * 2);
     if (held) { ctx.shadowColor = '#0006'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 4; }
@@ -957,7 +1026,10 @@ function render() {
   } else dbgEl.textContent = '';
 }
 
-document.getElementById('new').onclick = newGame;
+document.getElementById('new').onclick = () => {
+  msgEl.textContent = 'Scrambling…'; msgEl.style.display = 'block';
+  setTimeout(newGame, 30);
+};
 document.getElementById('demo').onclick = startDemo;
 document.getElementById('dbgBtn').onclick = () => { debug = !debug; if (E) { E.ensureSig(); E.monitorOn = debug; } };
 window.addEventListener('resize', layout);
@@ -965,7 +1037,7 @@ window.addEventListener('resize', layout);
 window.T = {
   generate, simulateMove, settle, Engine,
   get E() { return E; },
-  get state() { return { phase, moves, view, active: E.active().length, crossings: E.totalCrossings(), flags: E.flags, minDist: E.minDist, landing: E.landing.length }; },
+  get state() { return { phase, moves, view, active: E.active().length, crossings: E.totalCrossings(), flags: E.flags, minDist: E.minDist, busy: E.busy() }; },
   pegScreen(i) { const P = E.board.pegs[i]; return { x: view.ox + P.x * view.s, y: 48 + view.oy + P.y * view.s }; },
   show(eng, par) { E = eng; game = { E, par: par || 0, genMs: 0, moves: [] }; paused = true; phase = 'idle'; layout(); },
   play(g) { E = g.E; game = g; E.monitorOn = debug; paused = false; phase = 'idle'; moves = 0; layout(); },
