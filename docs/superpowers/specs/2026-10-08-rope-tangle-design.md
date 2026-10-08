@@ -28,7 +28,7 @@ Out (designed for, not built): other hole layouts (filled grids, 2×2 islands), 
 
 ## 4. Architecture
 
-Modern TypeScript + Vite + PWA + canvas 2D, tests with vitest, same as the other games. No framework.
+Modern TypeScript + Vite + PWA + canvas 2D, tests with vitest, toolchain versions as in the `puzzle` game. No framework.
 
 Modules, each a directory under `src/`:
 

@@ -6,7 +6,7 @@
 
 **Architecture:** The tangle is a planar diagram on the unit circle: ropes are polylines whose vertices are ends, folds and crossings, each crossing labelled with the rope on top. One operation, `moveEnd`, reproduces what the physical move does (cut back to the last under-crossing, straight segment to the midpoint of a gap in the cyclic order of ends, every intersection becomes an over-crossing). Recipes match combinatorial patterns and call `moveEnd`; the scrambler draws recipes from a weighted deck until every rope is hooked. No physics, no holes, no randomness in geometry.
 
-**Tech Stack:** TypeScript (strict), Vite 8, Vitest 4, Node 22. No runtime dependencies.
+**Tech Stack:** TypeScript 7 (strict), Vite 8, Vitest 5, oxlint, Node 22. No runtime dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-10-08-rope-tangle-design.md` (sections 4, 6, 7; this plan covers modules `diagram`, `recipes`, `scramble` and the scaffold). Plans 2 (engine + realize) and 3 (game, render, worker, deploy) follow.
 
@@ -14,8 +14,8 @@
 
 - Code, identifiers and comments in American English. Add a comment only where the code cannot say it; prefer no comment.
 - TypeScript strict with `noUncheckedIndexedAccess`; no `any`; no runtime dependencies.
-- Node 22 (`.nvmrc`), npm. Tests run with `npm test` (`vitest run`), types with `npm run typecheck` (`tsc --noEmit`).
-- Tooling mirrors the sibling game `adrianschmidt/symmetry`: `src/` for code, `tests/` for tests, `vite.config.ts` with the vitest block, 2-space indent, double quotes.
+- Node 22 (`.nvmrc`), npm. Tests run with `npm test` (`vitest run`), types with `npm run typecheck` (`tsc --noEmit`), lint with `npm run lint` (oxlint, type-aware). All three must be clean at every commit.
+- Toolchain versions follow the `puzzle` game (the most recently maintained sibling); conventions beyond that are chosen for this game: `src/` for code, `tests/` for tests, 2-space indent, double quotes.
 - The existing `spike/` directory and `.github/workflows/deploy.yml` stay untouched; the workflow keeps publishing `spike/` only.
 - The diagram module never imports from `board`, `engine` or anything DOM-related; recipes and the scrambler never use randomness except the scrambler's seeded choice among matching recipes (spec §7.3).
 - Conventional commit messages, one commit per task step that says "Commit".
@@ -56,7 +56,7 @@
 ### Task 1: Project scaffold
 
 **Files:**
-- Create: `package.json`, `tsconfig.json`, `vite.config.ts`, `.nvmrc`, `.gitignore`, `index.html`, `src/main.ts`, `src/vite-env.d.ts`
+- Create: `package.json`, `tsconfig.json`, `vite.config.ts`, `.oxlintrc.jsonc`, `.nvmrc`, `.gitignore`, `index.html`, `src/main.ts`, `src/vite-env.d.ts`
 - Test: `tests/smoke.test.ts`
 
 **Interfaces:**
@@ -80,10 +80,33 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "typescript": "~5.9.3",
-    "vite": "^8.0.1",
-    "vitest": "^4.1.0"
+    "oxlint": "^1.85.0",
+    "oxlint-tsgolint": "~7.0.2003",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
   }
+}
+```
+
+Add to `scripts`: `"lint": "oxlint --disable-nested-config -c .oxlintrc.jsonc src tests"`.
+
+`.oxlintrc.jsonc`:
+```jsonc
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "options": { "typeAware": true, "reportUnusedDisableDirectives": "error" },
+  "ignorePatterns": ["/spike/", "/docs/", "/*.config.ts"],
+  "categories": { "correctness": "error", "suspicious": "error" },
+  "rules": {
+    "no-console": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/only-throw-error": "error",
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "off",
+    "unicorn/consistent-function-scoping": "off"
+  },
+  "overrides": [{ "files": ["**/*.test.ts"], "rules": { "no-console": "off" } }]
 }
 ```
 
@@ -91,21 +114,29 @@
 ```json
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "erasableSyntaxOnly": true,
     "noEmit": true,
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noUncheckedIndexedAccess": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["vitest/globals", "vite/client"],
     "skipLibCheck": true
   },
   "include": ["src", "tests"]
 }
 ```
+
+`verbatimModuleSyntax` means type-only imports must use `import type` or inline `type` modifiers; the code in this plan already does.
 
 `vite.config.ts`:
 ```ts
@@ -172,13 +203,13 @@ describe("tooling", () => {
 
 - [ ] **Step 2: Install and run everything**
 
-Run: `npm install && npm test && npm run typecheck && npm run build`
-Expected: 1 test passes, typecheck clean, `dist/` produced.
+Run: `npm install && npm test && npm run typecheck && npm run lint && npm run build`
+Expected: 1 test passes, typecheck and lint clean, `dist/` produced. If oxlint's type-aware mode complains about the version pairing, pin `oxlint-tsgolint` to the version `oxlint` prints in its error.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add package.json package-lock.json tsconfig.json vite.config.ts .nvmrc .gitignore index.html src tests
+git add package.json package-lock.json tsconfig.json vite.config.ts .oxlintrc.jsonc .nvmrc .gitignore index.html src tests
 git commit -m "chore: scaffold the game project"
 ```
 
@@ -1123,7 +1154,7 @@ Expected: PASS. If the hook test fails on the sequence, check the stub direction
 
 - [ ] **Step 5: Run the whole suite and typecheck**
 
-Run: `npm test && npm run typecheck`
+Run: `npm test && npm run typecheck && npm run lint`
 Expected: all green.
 
 - [ ] **Step 6: Commit**
@@ -1664,7 +1695,7 @@ Add a temporary `console.time` around `scramble(seed, 10)` in a scratch test or 
 
 - [ ] **Step 6: Full suite, typecheck, commit**
 
-Run: `npm test && npm run typecheck`
+Run: `npm test && npm run typecheck && npm run lint`
 
 ```bash
 git add src/recipes src/scramble tests/scramble.test.ts
@@ -1765,7 +1796,7 @@ Run: `npm run dev` and open `http://localhost:5173/rope-tangle/?seed=1&ropes=5`,
 
 - [ ] **Step 3: Typecheck, build, commit**
 
-Run: `npm run typecheck && npm run build`
+Run: `npm run typecheck && npm run lint && npm run build`
 
 ```bash
 git add src/main.ts src/devpage index.html
