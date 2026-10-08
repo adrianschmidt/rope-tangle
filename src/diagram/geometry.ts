@@ -8,7 +8,8 @@ const EPS = 1e-9;
 
 export function normAngle(a: number): number {
   const r = a % TAU;
-  return r < 0 ? r + TAU : r;
+  const n = (r < 0 ? r + TAU : r) + 0;
+  return n >= TAU ? 0 : n;
 }
 
 export function circlePoint(angle: number): Point {

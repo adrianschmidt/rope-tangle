@@ -6,6 +6,17 @@ describe("normAngle", () => {
     expect(normAngle(TAU + 0.5)).toBeCloseTo(0.5);
     expect(normAngle(TAU)).toBe(0);
   });
+
+  it("keeps tiny negative inputs inside [0, TAU)", () => {
+    const n = normAngle(-1e-17);
+    expect(n).toBeGreaterThanOrEqual(0);
+    expect(n).toBeLessThan(TAU);
+  });
+
+  it("returns +0 for -0 and -TAU", () => {
+    expect(Object.is(normAngle(-0), 0)).toBe(true);
+    expect(Object.is(normAngle(-TAU), 0)).toBe(true);
+  });
 });
 
 describe("circlePoint", () => {
