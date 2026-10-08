@@ -1,7 +1,7 @@
 # Rope Tangle — design spec
 
-Date: 2026-10-08
-Status: draft for review
+Date: 2026-10-08 (revised 2026-10-09)
+Status: reviewed by Adrian; revisions applied
 Repo: `adrianschmidt/rope-tangle` (the prototypes live in `spike/`; this spec describes the real game)
 
 ## 1. Goal
@@ -37,13 +37,13 @@ Modules, each a directory under `src/`:
 | `board` | Hole layout as data; rim parametrization | — |
 | `diagram` | Abstract tangle: ropes as polylines with over/under crossings; the move operation; queries | — |
 | `recipes` | Named tangle patterns: match against a diagram, emit moves | `diagram` |
-| `scramble` | Builds a diagram from a seed, rope count and difficulty; fits ends to holes | `diagram`, `recipes`, `board` |
+| `scramble` | Builds a diagram from a seed, rope count and difficulty | `diagram`, `recipes` |
 | `engine` | Physics: thick ropes with height, contacts, pegs, held/flying/landing ends; crossing readout | `board` |
-| `realize` | Turns a diagram into an engine state (fast path) or replays its moves (fallback) and checks agreement | `diagram`, `engine` |
+| `realize` | Fits a diagram to the board's holes, turns it into an engine state, checks agreement | `diagram`, `engine`, `board` |
 | `render` | Draws board, ropes, handles | `engine`, `board` |
 | `game` | Input, phases, clearing, win, settings, generation in a worker | all |
 
-Data flow for a new board: `scramble` (pure, fast) → `realize` (physics settle, in a Web Worker) → `game` receives the engine state → play.
+Data flow for a new board: `scramble` (pure, fast, no board knowledge) → `realize` (hole fitting and physics settle, in a Web Worker) → `game` receives the engine state → play.
 
 ## 5. Board (`board`)
 
@@ -55,7 +55,7 @@ interface Board { width: number; height: number; holes: Hole[]; rimLength: numbe
 - `rim` is the hole's position along the rim, measured clockwise from the top-left corner, in board units. `ox, oy` is the outward normal (diagonal at corners).
 - The rim-only generator makes a `cols × rows` grid with 64-unit pitch and holes on the perimeter only. Size by rope count: 4→4×5, 5→4×6, 6→5×6, 7→5×7, 8→6×7, 9→6×8, 10→7×8 (holes ≥ 2 × ropes + 4 in every case).
 - `rimPoint(board, t)` maps a rim parameter `t ∈ [0, rimLength)` to a point on the rectangle; `rimOf(board, hole)` is its inverse for holes.
-- The layout is data so that later board types only add generators. Nothing else in the game may assume holes are on the rim except the scrambler's end placement (§7.4) and the engine's peg obstacle shape (§8.4).
+- The layout is data so that later board types only add generators. Nothing else in the game may assume holes are on the rim except the diagram's circular rim (§6), the hole fitting (§9.1) and the engine's peg obstacle shape (§8.3).
 
 ## 6. Diagram (`diagram`)
 
@@ -68,25 +68,27 @@ interface Vertex { x: number; y: number; kind: 'end' | 'fold' | 'crossing'; cros
 interface RopeD { id: number; vertices: Vertex[] }          // vertices[0] is end 0, last is end 1
 interface Crossing { id: number; a: number; b: number; over: number; posA: number; posB: number }
 interface Diagram { ropes: RopeD[]; crossings: Map<number, Crossing>; ends: EndPos[] }
-interface EndPos { rope: number; end: 0 | 1; t: number }     // rim parameter
+interface EndPos { rope: number; end: 0 | 1; angle: number }  // position on the unit circle
 ```
+
+- The diagram's rim is the unit circle and all geometry lives inside it. Holes, pegs and the board rectangle do not exist here; `realize` maps the disc onto the board (§9.1).
 
 - A rope is a polyline. Crossing vertices appear in both ropes' vertex lists (sharing one `Crossing` record). `posA`/`posB` are the crossing's index positions along each rope, kept consistent after every edit.
 - `over` names the rope on top. A crossing may be a self-crossing (`a === b`); self-crossings are kept for correctness but never count as "crossing something" for the clearing rule.
-- `fold` vertices are plain route points with no topological meaning (§7.4 uses them).
+- `fold` vertices are plain route points with no topological meaning (§9.1 uses them).
 - Geometry is deliberately allowed to be ugly. Correctness depends only on: every vertex sequence is a valid polyline, segments intersect only at recorded crossings, and `over` labels are right. The physics straightens everything later.
 
 ### 6.2 The move
 
-`moveEnd(diagram, rope, end, t)` moves one rope end to rim position `t`, as the game's physical move would:
+`moveEnd(diagram, rope, end, gap)` moves one rope end into a gap of the cyclic order (between two named neighboring ends, or the gap an end leaves behind), as the game's physical move would. The end is placed at the midpoint of that gap on the circle; no other position is ever used, so the operation is deterministic and needs no random input.
 
 1. Walk from the moved end back along the rope to the nearest crossing where this rope is **under**. Everything beyond it (toward the moved end) is the lifted stretch. If there is none, the whole rope is lifted.
 2. Delete every crossing on the lifted stretch (from both ropes' vertex lists). Delete the lifted vertices.
-3. Append one straight segment from the hold-down vertex (the under-crossing, or the other end) to `rimPoint(t)`, and set the end's rim position.
+3. Append one straight segment from the hold-down vertex (the under-crossing, or the other end) to the gap midpoint on the circle, and set the end's angle.
 4. Intersect the new segment with every segment of every rope, including the retained part of this rope. Each intersection becomes a crossing with `over = rope`, inserted into both polylines at the right positions.
-5. Degeneracies: if `t` is within `MIN_END_GAP` (one hole pitch) of another end, slide `t` to the nearest point that is not; if the new segment passes through an existing vertex or crosses another segment at its endpoint, nudge `t` by a small amount and retry (bounded retries, then throw `DiagramDegenerate`).
+5. Degeneracies: if the new segment passes exactly through an existing vertex or meets another segment at its endpoint, nudge the angle by a fixed tiny fraction of the gap and retry (bounded retries, then throw `DiagramDegenerate`). Gaps are allowed to become arbitrarily small; the abstract spacing of ends carries no meaning, because holes are assigned by cyclic order only (§9.1).
 
-Why this is right: a lifted end passes over everything, and with all ends on the rim the result of a move depends only on where the end lands in the cyclic order of ends, not on the path or the current shape of the ropes. So any valid planar drawing gives a topologically correct result.
+Why this is right: a lifted end passes over everything, and with all ends on the rim the result of a move depends only on where the end lands in the cyclic order of ends, not on the path or the current shape of the ropes. So any valid planar drawing gives a topologically correct result, and step 4 records every side effect on uninvolved ropes exactly, since it intersects the new segment with all of them.
 
 ### 6.3 Queries
 
@@ -94,7 +96,7 @@ Why this is right: a lifted end passes over everything, and with all ends on the
 - `isHooked(d, a, b)`: the pair sequence contains both labels.
 - `hookedRopes(d)`: ropes hooked with at least one other rope.
 - `crossingCount(d, rope)`: crossings with other ropes (self-crossings excluded).
-- `cyclicOrder(d)`: ends sorted by rim position.
+- `cyclicOrder(d)`: ends sorted by angle.
 - `liftedStretch(d, rope, end)`: the crossings a move of that end would remove (the step-1 walk). Recipes use it to reason about what a move will and won't undo.
 - `reduce(d)` (optional, not needed for correctness): remove crossing pairs that are adjacent along both ropes with the same `over`. Keeps diagrams small on long scrambles.
 
@@ -102,7 +104,7 @@ Why this is right: a lifted end passes over everything, and with all ends on the
 
 - After any sequence of moves, for every pair of ropes the parity of their crossing count equals whether their ends alternate around the rim.
 - Replaying a move log on a fresh diagram reproduces the same diagram.
-- `moveEnd` of an end back to the exact rim position it came from, when the lifted stretch had only over-crossings created by the previous move, restores the previous pair sequences (undo property).
+- Moving an end back into the gap it came from, when the lifted stretch had only over-crossings created by the previous move, restores the previous pair sequences (undo property).
 
 ## 7. Recipes and scrambling (`recipes`, `scramble`)
 
@@ -114,14 +116,14 @@ interface Recipe {
   arity: number;                               // ropes involved
   weight: number;                              // deck weight
   match(d: Diagram, ropes: number[]): Binding | null;
-  apply(d: Diagram, b: Binding, rng: Rng): void;   // calls moveEnd one or more times
+  apply(d: Diagram, b: Binding): void;             // calls moveEnd one or more times
 }
 ```
 
 - A `Binding` names the involved ropes and which of their ends are running ends (will be moved) and standing ends (will not). An end attached to the rim can play either role; a recipe never moves anything but a running end at the rim.
 - `match` is purely combinatorial: cyclic order of the involved ends (up to rotation and mirroring) plus the pair sequences the recipe requires. It ignores uninvolved ropes.
-- Move targets are rim **intervals** between named ends, never holes or absolute positions. `apply` picks a position inside the interval (midpoint by default, jittered by `rng`) and calls `moveEnd`.
-- Side effects on uninvolved ropes (extra crossings, accidental hooks) are allowed and welcome. Recipes do not verify anything; the diagram is exact.
+- Move targets are **gaps** between named ends in the cyclic order, never holes or absolute positions. `apply` is deterministic given the binding.
+- Side effects on uninvolved ropes (extra crossings, accidental hooks) are allowed and welcome. They are not special-cased anywhere: `moveEnd` records them exactly like any other crossing, so the diagram stays a complete record of the tangle. Recipes do not verify anything.
 
 ### 7.2 Initial deck
 
@@ -137,20 +139,13 @@ Recipes are data plus two functions; adding one is a content change. Candidates 
 scramble(seed: number, ropeCount: number, difficulty: Difficulty): { diagram: Diagram; log: Move[] }
 ```
 
-1. Seeded RNG (mulberry32 as in the spike). Place `2 × ropeCount` ends around the rim at random positions with at least `MIN_END_GAP` between them; pair neighboring ends into ropes so the start has no crossings. Assign colors.
+1. Seeded RNG (mulberry32 as in the spike). Place `2 × ropeCount` ends evenly around the circle and pair neighboring ends into ropes, so the start has no crossings. The RNG is used only to choose among matching recipes.
 2. Loop:
    - Enumerate all (recipe, rope tuple) pairs whose `match` succeeds.
    - Pick one at random, weighted by recipe weight; apply it; append its moves to the log.
    - Stop when every rope is hooked (`hookedRopes(d)` is all ropes) **and** at least `difficulty.recipes` recipes have been applied. Give up after `difficulty.maxRecipes` and retry with the next seed (counted in telemetry during development; must be rare).
-3. Fit ends to holes (§7.4).
 
 `Difficulty` for the first release is derived from rope count only: `recipes = ropeCount`, `maxRecipes = 4 × ropeCount`. The deck and its weights are the knobs for later difficulty settings.
-
-### 7.4 Fitting ends to holes
-
-Ends have continuous rim positions; holes are discrete. Map ends to holes by a random monotone assignment that preserves cyclic order and spreads the ends over the available holes (each end gets its own hole; gaps are distributed at random with at least the gaps needed to use the whole rim).
-
-Moving an end's rim position changes the geometry of its last segment, which could add or remove crossings on it. To keep the diagram exact, do not move the segment: insert a `fold` vertex at the end's old position pulled one rope width inward from the rim, and run a new last segment from that fold along the rim strip to the hole. No other rope has a segment inside the rim strip between two neighboring ends, so the new segment crosses nothing. The physics removes the fold when it settles.
 
 ## 8. Engine (`engine`)
 
@@ -170,7 +165,6 @@ A port of the second prototype (`spike/index.html`), restructured into typed mod
 - **Held**: follows the pointer target at `STEP = 3` units/substep in xy, and rises to `max(LIFT = 45, highest other-rope particle within 30 units + CLEARANCE = 38)`. It only starts moving in xy once lifted. A vertical blocker segment above the held end stops ropes resting on the lifted stretch from slipping over the end.
 - **Flying**: a released end keeps a path (pointer position, then the hole) and a target hole; it is driven like a held end and lands when it arrives. Several ends may fly at once.
 - **Landing**: the end snaps to the hole in xy, keeps its blocker, waits (up to 40 substeps) until no other rope particle lies inside the peg radius below it, then descends at `STEP` per substep to z = 0.
-- An end may also be **pinned at an arbitrary rim point** (virtual peg) for the fallback realization (§9.2). Pinned ends behave like holes, including the obstacle.
 
 ### 8.3 Pegs
 
@@ -187,24 +181,26 @@ Measured on the Mac mini with the prototype: 0.03–0.14 ms per substep on fresh
 
 ## 9. Realization (`realize`)
 
-Turns a scrambled diagram into a settled engine state.
+Turns a scrambled diagram into a settled engine state. This is the only place where holes, pegs and the board rectangle meet the diagram, and the only place randomness touches geometry.
 
-### 9.1 Fast path: place and inflate
+### 9.1 Fitting to the board
 
-1. For each diagram rope, build the particle chain along its polyline (ends, folds, crossing vertices) at `H0` spacing.
+1. Map the unit disc onto the board rectangle with a homeomorphism: a point at polar coordinates `(r, θ)` goes to `center + r × (rimPoint at angle θ)`, where the rim point at angle θ is where the ray from the center at that angle meets the rectangle's edge. The circle maps onto the rim and the cyclic order of ends is preserved.
+2. Assign ends to holes with a random monotone assignment (seeded): same cyclic order, one hole per end, the remaining empty holes distributed at random among the gaps. This is where the jitter in end placement lives.
+3. An end's hole is generally not where its mapped rim point landed. Moving the last segment to the hole could change which segments it crosses, so the segment is not moved: insert a `fold` vertex at the mapped rim point pulled one rope width inward, and run a new last segment from that fold along the rim strip to the hole. No rope has a segment inside the rim strip between two neighboring ends, so the new segment crosses nothing and the diagram stays exact. The physics removes the fold when it settles.
+
+### 9.2 Place and inflate
+
+1. For each diagram rope, build the particle chain along its mapped polyline (ends, folds, crossing vertices) at `H0` spacing.
 2. Heights: at each crossing set the over strand to `+8` and the under strand to `−8` (half the final contact distance); interpolate linearly in arc length between crossings; ends at 0.
 3. Create the engine with contact distance 0, then settle while growing the contact distance linearly to `D = 16` over 150 substeps, then settle to rest (net movement over an 8-substep window below 0.15 units, or 800 substeps). The heights already encode every crossing's order, and nothing starts penetrated, so contacts never have to guess which way to push.
-4. Compare the engine's signature with the diagram (§9.3). On agreement, done.
+4. Compare the engine's signature with the diagram (§9.3).
 
-### 9.2 Fallback: replay
+### 9.3 Agreement check and debug dump
 
-Build the initial non-crossing state in the engine with ends pinned at the diagram's initial rim positions (virtual pegs), replay the move log as physical moves (pin the end at the move's rim position), then slide each end along the rim to its hole. This is what the prototype does today and is known to hold up.
+For each rope pair, take the physical and the diagram pair sequences, reduce each by deleting adjacent equal labels (the physics performs exactly those simplifications when ropes pull taut), and require them to be equal; also require identical cyclic order of ends and the same set of hooked pairs.
 
-The fallback exists so that the game works while the fast path is being proven. The long-term goal is a fast path that has been tested to agree so reliably that both the comparison and the fallback can be removed.
-
-### 9.3 Agreement check
-
-For each rope pair, take the physical and the diagram pair sequences, reduce each by deleting adjacent equal labels (the physics performs exactly those simplifications when ropes pull taut), and require them to be equal; also require identical cyclic order of ends and the same set of hooked pairs. Record the outcome; development builds log the disagreement rate.
+On disagreement there is no fallback. The game writes a debug dump and generates a fresh board with the next seed so play continues. The dump is a single JSON text containing everything needed to reproduce the case offline: app version, seed, rope count, difficulty, deck version, the move log, the diagram, the physical signature, the per-pair comparison, and the engine constants. It is logged to the console and, in development builds, shown in a copyable text box; in production it is kept in memory and shown on request from the settings panel, so Adrian can copy it and send it for debugging. The check and the dump stay until testing shows the fast path agrees reliably enough to remove them.
 
 ## 10. Game (`game`, `render`)
 
@@ -228,7 +224,7 @@ A rope clears when it has crossed nothing for 4 consecutive frames while nothing
 
 ### 10.5 Rendering
 
-Canvas 2D, device pixel ratio capped at 2. Ropes are flat ribbons (width 12, dark outline 1.5) drawn in painter's order by height: each rope is cut into pieces at its particles, pieces sorted by quantized height, consecutive pieces of one rope at the same height merged into one stroke. Pieces are extended by 0.75 units at their ends to hide seams. Pegs are discs; empty holes are pale discs. The held/flying handle is drawn on top with a shadow. Ten distinct rope colors.
+Canvas 2D, device pixel ratio capped at 2. Ropes are flat ribbons (width 12, dark outline 1.5) drawn in painter's order by height: each rope is cut into pieces at its particles, pieces sorted by quantized height, consecutive pieces of one rope at the same height merged into one stroke. Pieces are extended by 0.75 units at their ends to hide seams. Pegs are discs; empty holes are pale discs. The held/flying handle is drawn on top with a shadow. Ten distinct rope colors, assigned by `game` when a board is loaded (the diagram and the engine know nothing about color).
 
 ### 10.6 Generation and settings
 
@@ -239,9 +235,9 @@ Canvas 2D, device pixel ratio capped at 2. Ropes are flat ribbons (width 12, dar
 
 - `diagram`: move semantics on hand-built cases (hook, twist, lifted stretch with and without under-crossings, self-crossing), the parity invariant over random move sequences, replay determinism, degeneracy handling.
 - `recipes`: each recipe's `match` on positive and negative cases; `apply` produces the documented pair sequences.
-- `scramble`: over many seeds and rope counts, every rope hooked, hole fitting preserves cyclic order and adds no crossings, retry rate.
-- `engine`: scripted move batteries (as in the prototype's `T.run`) with the pass-through monitor: zero flags on normal boards, minimum centerline gap reported; settle time; a forced pass-through is detected (monitor sanity).
-- `realize`: agreement rate of the fast path over many seeds per rope count (target ≥ 99% before removing the fallback); fallback produces a board for every seed.
+- `scramble`: over many seeds and rope counts, every rope hooked, retry rate, determinism (same seed, same diagram).
+- `engine`: scripted move batteries (as in the prototype's `T.run`) with the pass-through monitor: zero flags on normal boards, minimum centerline gap reported; settle time; a forced pass-through is detected (monitor sanity). Inflation from zero thickness on realized boards never produces a monitor flag.
+- `realize`: hole fitting preserves cyclic order and adds no crossings; agreement rate over many seeds per rope count (the number that decides when the check can go); a disagreement produces a dump that reproduces the case.
 - Benchmarks (not asserted): ms per substep for fresh 5/8/10-rope boards and for a dense tangle; generation time per rope count.
 - Playwright: grab, drag, release into a hole, release away from a hole, grab while another end flies, play a board to the win overlay; throttled-CPU run to check the handle stays responsive.
 
@@ -254,5 +250,7 @@ Designed for, not built: other hole layouts (the board is data; the engine's peg
 - Thick ropes with height instead of a 2D crossing list: the first prototype's knots collapsed below one rope width and could not be drawn; heights also give the draw order for free.
 - No par: it was becoming a constraint on the scrambler. The move log is kept so a par can be derived later.
 - Abstract scrambling: recipes need exact combinatorics, which physics can only approximate; the physics is only asked to realize a known tangle.
+- Diagram on a circle with midpoint placement and no spacing rules: spacing in the diagram means nothing, holes are assigned by order alone, and keeping the diagram deterministic makes every generated board reproducible from its seed.
+- No replay fallback: a disagreement between diagram and physics is a bug to fix, not a case to paper over; the dump makes it reproducible.
 - Snap to nearest hole on release: retracing the drag path did not restore the starting state and looked wrong.
 - Ends finish flights on their own: waiting for the board to settle between moves was the main feel complaint.
