@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "options": { "typeAware": true, "reportUnusedDisableDirectives": "error" },
+  "ignorePatterns": ["/spike/", "/docs/", "/*.config.ts"],
+  "categories": { "correctness": "error", "suspicious": "error" },
+  "rules": {
+    "no-console": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/only-throw-error": "error",
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "off",
+    "unicorn/consistent-function-scoping": "off"
+  },
+  "overrides": [{ "files": ["**/*.test.ts"], "rules": { "no-console": "off" } }]
+}
