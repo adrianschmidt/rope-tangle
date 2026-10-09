@@ -84,6 +84,7 @@ test.describe("easy board", () => {
 
   test("keeps dragging accurate after a resize", async ({ page }) => {
     await page.setViewportSize({ width: 800, height: 420 });
+    await expect.poll(() => page.evaluate(() => document.querySelector("canvas")!.style.width)).toBe("800px");
     await drag(page, await at(page, 192, 256), await at(page, 128, 256));
     await idle(page);
     expect((await state(page)).ends[0]![1]).toBe(await holeAt(page, 128, 256));
