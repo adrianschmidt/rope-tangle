@@ -22,18 +22,19 @@ export interface Generated {
 export function generateBoard(seed: number, ropes: number, opts: GenerateOptions = {}): Generated {
   const board = boardForRopes(ropes), difficulty = defaultDifficulty(ropes);
   const maxTries = opts.maxTries ?? 10, run = opts.realizeImpl ?? realize;
+  const realizeOpts: RealizeOptions = { ...opts, monitor: opts.monitor ?? true };
   const dumps: string[] = [];
   let next = seed;
   for (let tries = 1; tries <= maxTries; tries++) {
     const s = scrambleWithRetry(next, ropes, difficulty);
     let realized: Realized | null = null, error: string | null = null;
     try {
-      realized = run(s.diagram, board, s.seed, opts);
+      realized = run(s.diagram, board, s.seed, realizeOpts);
     } catch (e) {
       if (!(e instanceof RealizeFailed)) throw e;
       error = e.message;
     }
-    if (realized && realized.agreement.ok) {
+    if (realized && realized.agreement.ok && realized.passThroughs === 0) {
       return { engine: realized.engine, seed: s.seed, scrambled: s, realized, dumps, tries };
     }
     dumps.push(makeDump({
@@ -47,6 +48,7 @@ export function generateBoard(seed: number, ropes: number, opts: GenerateOptions
       error,
       signature: realized ? flatSignature(realized.engine.signature()) : [],
       comparison: realized?.agreement ?? null,
+      passThroughs: realized?.passThroughs ?? 0,
     }));
     next = s.seed + 1;
   }

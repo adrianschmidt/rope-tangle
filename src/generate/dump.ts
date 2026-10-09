@@ -35,6 +35,7 @@ export interface DumpInput {
   error: string | null;
   signature: PhysCrossing[];
   comparison: Agreement | null;
+  passThroughs: number;
 }
 
 export interface DebugDump extends DumpInput {

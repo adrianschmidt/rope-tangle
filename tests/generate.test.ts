@@ -13,6 +13,7 @@ describe("debug dump", () => {
     const text = makeDump({
       seed: s.seed, ropes: 4, difficulty: defaultDifficulty(4), log: s.log, diagram: diagramToJson(s.diagram),
       holes: r.holes, stage: "physics", error: null, signature: flatSignature(r.engine.signature()), comparison: r.agreement,
+      passThroughs: r.passThroughs,
     });
     const dump = parseDump(text);
     expect(dump.kind).toBe("rope-tangle-debug");
@@ -48,6 +49,31 @@ describe("generateBoard", () => {
     const dump = parseDump(g.dumps[0]!);
     expect(dump.stage).toBe("physics");
     expect(dump.seed).toBeLessThan(g.seed);
+  });
+
+  it("monitors realization by default and lets the caller turn it off", () => {
+    const seen: (boolean | undefined)[] = [];
+    const spy: typeof realize = (d, board, seed, opts) => {
+      seen.push(opts?.monitor);
+      return realize(d, board, seed, opts);
+    };
+    generateBoard(1, 4, { realizeImpl: spy });
+    generateBoard(1, 4, { realizeImpl: spy, monitor: false });
+    expect(seen[0]).toBe(true);
+    expect(seen[seen.length - 1]).toBe(false);
+  });
+
+  it("treats a pass-through seen during realization as a disagreement", () => {
+    let calls = 0;
+    const leaky: typeof realize = (d, board, seed, opts) => {
+      const r = realize(d, board, seed, opts);
+      return calls++ === 0 ? { ...r, passThroughs: 1 } : r;
+    };
+    const g = generateBoard(11, 4, { realizeImpl: leaky });
+    expect(g.tries).toBe(2);
+    const dump = parseDump(g.dumps[0]!);
+    expect(dump.stage).toBe("physics");
+    expect(dump.passThroughs).toBe(1);
   });
 
   it("records a fit failure as a dump", () => {
