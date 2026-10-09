@@ -72,6 +72,19 @@ describe("pass-through monitor", () => {
     expect(m.kinds.flip).toBeGreaterThan(0);
   });
 
+  it("compares the first substep against the state when the monitor was attached", () => {
+    const E = crossingPair(4);
+    settle(E);
+    const m = new Monitor();
+    E.attachMonitor(m);
+    for (const p of E.ropes[1]!.pts.slice(1, -1)) {
+      p.z += 40;
+      p.pz = p.z;
+    }
+    E.substep(null);
+    expect(m.kinds.flip).toBeGreaterThan(0);
+  });
+
   it("plays scripted moves on 5-rope boards without a pass-through", () => {
     for (const seed of [1, 2, 3]) {
       const { E, rng } = straightBoard(5, seed);

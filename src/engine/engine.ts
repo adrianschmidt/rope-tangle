@@ -25,7 +25,7 @@ export class Engine {
   landing: LandingEnd[] = [];
   contactD = D;
   resampleOn = true;
-  zTension = true;
+  tensionOn = true;
   monitor: Monitor | null = null;
   drift = Infinity;
   substeps = 0;
@@ -131,6 +131,11 @@ export class Engine {
     return s;
   }
 
+  attachMonitor(m: Monitor | null): void {
+    this.monitor = m;
+    if (m) m.observe(this.signature(), this.freeIds, this.lastHeld, this.substeps);
+  }
+
   resetDrift(): void {
     this.drift = Infinity;
     this.winN = 0;
@@ -176,7 +181,7 @@ export class Engine {
     let minD = Infinity;
     for (let it = 0; it < ITER; it++) {
       if (it === ITER >> 1) this.col.activePairs(d);
-      for (const r of act) tension(r.pts, (it & 1) === 1, this.zTension);
+      if (this.tensionOn) for (const r of act) tension(r.pts, (it & 1) === 1);
       applyPosts(posts);
       minD = this.col.solve(false, d);
       if (it % WARM_EVERY === WARM_EVERY - 1) minD = Math.min(minD, this.col.solve(true, d));
@@ -402,17 +407,17 @@ function integrate(act: readonly ERope[]): void {
   }
 }
 
-function tension(p: Particle[], backward: boolean, withZ: boolean): void {
+function tension(p: Particle[], backward: boolean): void {
   const n = p.length;
-  if (backward) for (let i = n - 2; i >= 1; i--) pull(p, i, withZ);
-  else for (let i = 1; i < n - 1; i++) pull(p, i, withZ);
+  if (backward) for (let i = n - 2; i >= 1; i--) pull(p, i);
+  else for (let i = 1; i < n - 1; i++) pull(p, i);
 }
 
-function pull(p: Particle[], i: number, withZ: boolean): void {
+function pull(p: Particle[], i: number): void {
   const q = p[i]!, a = p[i - 1]!, b = p[i + 1]!;
   q.x += OMEGA * ((a.x + b.x) * 0.5 - q.x);
   q.y += OMEGA * ((a.y + b.y) * 0.5 - q.y);
-  if (withZ) q.z += OMEGA * ((a.z + b.z) * 0.5 - q.z);
+  q.z += OMEGA * ((a.z + b.z) * 0.5 - q.z);
 }
 
 function capDisplacement(act: readonly ERope[]): number {

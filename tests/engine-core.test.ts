@@ -65,6 +65,15 @@ describe("engine core", () => {
     expect(list[0]!.ua).toBeLessThan(list[1]!.ua);
   });
 
+  it("leaves particles in place with tension off and nothing pushing", () => {
+    const E = crossingPair(4);
+    E.tensionOn = false;
+    E.contactD = 0;
+    const before = E.ropes.map((r) => r.pts.map((p) => [p.x, p.y, p.z]));
+    for (let i = 0; i < 30; i++) E.substep(null);
+    expect(E.ropes.map((r) => r.pts.map((p) => [p.x, p.y, p.z]))).toEqual(before);
+  });
+
   it("keeps particle spacing near H0 by resampling", () => {
     const board = rimBoard(4, 5), E = new Engine(board);
     const pts: P3[] = [];
