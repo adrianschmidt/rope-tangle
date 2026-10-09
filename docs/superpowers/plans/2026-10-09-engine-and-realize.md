@@ -4,11 +4,11 @@
 
 **Goal:** Turn a scrambled diagram into a settled physical board that agrees with it, show it on the dev page, and measure how often the two agree.
 
-**Architecture:** Three new modules and one composition module. `board` is the hole layout as data. `engine` is a typed port of the second prototype's physics (`spike/index.html`). `realize` pins the diagram's ends to holes, warps it onto the board, spreads it out without changing its topology, places it as ropes of zero thickness, inflates them, and compares the result with the diagram. `generate` runs scramble and realize with a retry on disagreement and writes debug dumps. A small `render` port draws the result on the dev page; input, the game loop and the worker are plan 3.
+**Architecture:** Three new modules and one composition module. `board` is the hole layout as data. `engine` is a typed port of the second prototype's physics (`spike/index.html`). `realize` places the diagram unchanged as a disc in the middle of the board, extends each rope from the disc's edge to its hole without crossing anything, spreads the result out without changing its topology, places it as ropes of zero thickness, inflates them, and compares the result with the diagram. `generate` runs scramble and realize with a retry on disagreement and writes debug dumps. A small `render` port draws the result on the dev page; input, the game loop and the worker are plan 3.
 
 **Tech Stack:** TypeScript (strict), Vite, Vitest, oxlint. No runtime dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-10-08-rope-tangle-design.md` (§4, §5, §8, §9, §11). §9.1 and §9.2 were revised with this plan: the fold trick is replaced by an angle warp, and a topology-preserving spreading pass is added, because measured scrambles pack crossings far below rope width (median 0.002 of the radius between neighboring crossings at 10 ropes, minimum 1e-5).
+**Spec:** `docs/superpowers/specs/2026-10-08-rope-tangle-design.md` (§4, §5, §8, §9, §11). §9.1 and §9.2 were revised with this plan: the fold trick is replaced by extensions from a central disc to the holes, and a topology-preserving spreading pass is added, because measured scrambles pack crossings far below rope width (median 0.002 of the radius between neighboring crossings at 10 ropes, minimum 1e-5).
 
 ## Global Constraints
 
@@ -22,7 +22,7 @@
 
 ## Review Focus
 
-1. **Ends packed within a few millionths of a radian.** The warp stretches those wedges enormously; the layout must still validate. Pinned by the "packed ends" test in Task 5.
+1. **Ends packed within a few millionths of a radian.** Their extensions start almost on top of each other and fan out; the sampled layout must still validate. Pinned by the "packed ends" test in Task 5.
 2. **A rope that crosses itself.** Its crossing node has two passes of the same rope; the rotation check and the spreading pass must handle that. Pinned by the self-crossing tests in Tasks 5 and 6.
 3. **A disagreement in the middle of generation.** `generateBoard` must keep a dump, move to the next seed and still return a board; it must throw only after `maxTries`. Pinned by Task 8's tests.
 4. **A rope lying over an occupied hole.** The peg must push it to the board side. Pinned by Task 3's peg test.
@@ -1688,7 +1688,8 @@ git commit -m "test: check the pass-through monitor and a scripted move battery"
 - Test: `tests/fit.test.ts`
 
 **Interfaces:**
-- Consumes: `Diagram`, `cyclicOrder`, `normAngle`, `TAU`, `intersect` (plan 1); `Board`, `rimPoint` (Task 1); `Rng` (plan 1).
+- Consumes: `Diagram`, `cyclicOrder`, `normAngle`, `TAU`, `intersect` (plan 1); `Board` (Task 1); `Rng` (plan 1).
+- Why the extensions never cross: the extension of an end at angle `θ` with hole angle `φ` sits, at sweep stage `s`, at angle `θ + s(φ − θ)` on the ring `radius + s × (rim − radius)`. The hole angles are unwrapped to increase like the end angles and span less than one turn, so at every stage all extensions sit on the same ring in the same order. Rings for different stages are nested and all lie outside the disc.
 - Produces:
 ```ts
 export class RealizeFailed extends Error {}
@@ -1702,8 +1703,14 @@ export function edgePairOk(L: Layout, e: Edge, f: Edge): boolean;
 export function rotationOk(L: Layout, node: number, list: readonly [number, number][]): boolean;
 export function validLayout(L: Layout): boolean;
 export function assignHoles(d: Diagram, board: Board, rng: Rng): number[];  // index rope*2+end -> hole index
-export function makeWarp(d: Diagram, board: Board, holes: number[]): (p: Point) => Point;
-export function buildLayout(d: Diagram, board: Board, holes: number[]): Layout;   // throws RealizeFailed
+export const INNER = 0.6;                                                  // disc radius as a fraction of half the shorter side
+export function holeAngle(board: Board, hole: number): number;
+export function rimDistance(board: Board, angle: number): number;          // center to rim along a direction
+export function unwrapTargets(theta: readonly number[], target: readonly number[]): number[];
+export interface Embedding { center: Point; radius: number; ends: { theta: number; phi: number }[] }   // ends indexed rope*2+end
+export function embedding(d: Diagram, board: Board, holes: readonly number[]): Embedding;
+export function extensionPoint(board: Board, emb: Embedding, end: number, s: number): Point;           // s = 0 on the disc edge, 1 at the hole
+export function buildLayout(d: Diagram, board: Board, holes: readonly number[]): Layout;               // throws RealizeFailed
 ```
 
 - [ ] **Step 1: Write the failing test**
@@ -1711,8 +1718,8 @@ export function buildLayout(d: Diagram, board: Board, holes: number[]): Layout; 
 `tests/fit.test.ts`:
 ```ts
 import { boardForRopes, rimBoard } from "../src/board";
-import { createDiagram, cyclicOrder, moveEnd, type Diagram, type EndRef } from "../src/diagram";
-import { assignHoles, buildLayout, makeWarp } from "../src/realize/fit";
+import { createDiagram, cyclicOrder, moveEnd, TAU, type Diagram, type EndRef } from "../src/diagram";
+import { assignHoles, buildLayout, embedding, extensionPoint } from "../src/realize/fit";
 import { validLayout } from "../src/realize/layout";
 import { scramble } from "../src/scramble/scramble";
 import { mulberry32 } from "../src/util/rng";
@@ -1730,13 +1737,14 @@ function selfCrossingDiagram(): Diagram {
 }
 
 function packedEndsDiagram(): Diagram {
-  const d = createDiagram(4);
-  const x: EndRef = { rope: 1, end: 0 };
-  let a: EndRef = { rope: 0, end: 1 }, b: EndRef = { rope: 2, end: 0 };
-  moveEnd(d, b.rope, b.end, { after: x, before: { rope: 1, end: 1 } });
-  for (let i = 0; i < 18; i++) {
-    moveEnd(d, a.rope, a.end, { after: x, before: b });
-    [a, b] = [b, a];
+  const d = createDiagram(10);
+  const x: EndRef = { rope: 0, end: 0 };
+  let before: EndRef = { rope: 0, end: 1 };
+  for (let rope = 1; rope < 10; rope++) {
+    for (const end of [0, 1] as const) {
+      moveEnd(d, rope, end, { after: x, before });
+      before = { rope, end };
+    }
   }
   return d;
 }
@@ -1761,19 +1769,37 @@ describe("assignHoles", () => {
   });
 });
 
-describe("makeWarp", () => {
-  it("sends every end onto its hole and the center onto the board center", () => {
+describe("embedding", () => {
+  it("starts each extension where the rope meets the disc and ends it at the hole, outside the disc", () => {
     const { diagram } = scramble(3, 6);
     const board = boardForRopes(6);
     const holes = assignHoles(diagram, board, mulberry32(3));
-    const warp = makeWarp(diagram, board, holes);
-    for (const e of diagram.ends) {
-      const p = warp({ x: Math.cos(e.angle), y: Math.sin(e.angle) });
-      const h = board.holes[holes[e.rope * 2 + e.end]!]!;
-      expect(p.x).toBeCloseTo(h.x, 6);
-      expect(p.y).toBeCloseTo(h.y, 6);
+    const emb = embedding(diagram, board, holes);
+    diagram.ends.forEach((e, key) => {
+      const h = board.holes[holes[key]!]!;
+      const end = extensionPoint(board, emb, key, 1);
+      expect(end.x).toBeCloseTo(h.x, 6);
+      expect(end.y).toBeCloseTo(h.y, 6);
+      const start = extensionPoint(board, emb, key, 0);
+      expect(start.x).toBeCloseTo(emb.center.x + emb.radius * Math.cos(e.angle), 9);
+      expect(start.y).toBeCloseTo(emb.center.y + emb.radius * Math.sin(e.angle), 9);
+      for (let j = 1; j < 20; j++) {
+        const p = extensionPoint(board, emb, key, j / 20);
+        expect(Math.hypot(p.x - emb.center.x, p.y - emb.center.y)).toBeGreaterThan(emb.radius);
+      }
+    });
+  });
+
+  it("unwraps hole angles to increase like the end angles within one turn", () => {
+    for (let seed = 1; seed <= 30; seed++) {
+      const n = 4 + (seed % 7);
+      const { diagram } = scramble(seed, n);
+      const board = boardForRopes(n);
+      const emb = embedding(diagram, board, assignHoles(diagram, board, mulberry32(seed)));
+      const phi = cyclicOrder(diagram).map((e) => emb.ends[e.rope * 2 + e.end]!.phi);
+      for (let i = 1; i < phi.length; i++) expect(phi[i]!).toBeGreaterThan(phi[i - 1]!);
+      expect(phi[phi.length - 1]! - phi[0]!).toBeLessThan(TAU);
     }
-    expect(warp({ x: 0, y: 0 })).toEqual({ x: board.width / 2, y: board.height / 2 });
   });
 });
 
@@ -1815,7 +1841,7 @@ describe("buildLayout", () => {
     let gap = Infinity;
     for (let i = 0; i + 1 < o.length; i++) gap = Math.min(gap, o[i + 1]!.angle - o[i]!.angle);
     expect(gap).toBeLessThan(1e-5);
-    const board = boardForRopes(4);
+    const board = boardForRopes(10);
     const L = buildLayout(d, board, assignHoles(d, board, mulberry32(1)));
     expect(validLayout(L)).toBe(true);
   });
@@ -1950,17 +1976,40 @@ export function validLayout(L: Layout): boolean {
 
 `src/realize/fit.ts`:
 ```ts
-import { rimPoint, type Board } from "../board";
+import type { Board } from "../board";
 import { cyclicOrder, normAngle, TAU, type Diagram } from "../diagram";
 import type { Point } from "../util/point";
 import type { Rng } from "../util/rng";
 import { RealizeFailed } from "./errors";
-import { validLayout, type Layout, type LNode, type LRope } from "./layout";
+import { validLayout, type Layout, type LNode } from "./layout";
 
-const TOL0 = 0.5;
-const MAXLEN = 48;
-const MAX_DEPTH = 24;
+export const INNER = 0.6;
+const EXT_STEP = 16;
+const MIN_SAMPLES = 4;
 const REFINES = 6;
+
+const wrapPi = (a: number) => normAngle(a + Math.PI) - Math.PI;
+
+export function holeAngle(board: Board, hole: number): number {
+  const h = board.holes[hole];
+  if (!h) throw new Error(`no hole ${hole}`);
+  return Math.atan2(h.y - board.height / 2, h.x - board.width / 2);
+}
+
+export function rimDistance(board: Board, angle: number): number {
+  const dx = Math.abs(Math.cos(angle)), dy = Math.abs(Math.sin(angle));
+  const sx = dx > 1e-12 ? board.width / 2 / dx : Infinity;
+  const sy = dy > 1e-12 ? board.height / 2 / dy : Infinity;
+  return Math.min(sx, sy);
+}
+
+export function unwrapTargets(theta: readonly number[], target: readonly number[]): number[] {
+  const phi: number[] = [theta[0]! + wrapPi(target[0]! - theta[0]!)];
+  for (let i = 1; i < target.length; i++) phi.push(phi[i - 1]! + normAngle(target[i]! - phi[i - 1]!));
+  const mean = phi.reduce((sum, v, i) => sum + v - theta[i]!, 0) / phi.length;
+  const shift = TAU * Math.round(mean / TAU);
+  return phi.map((v) => v - shift);
+}
 
 export function assignHoles(d: Diagram, board: Board, rng: Rng): number[] {
   const order = cyclicOrder(d);
@@ -1972,16 +2021,12 @@ export function assignHoles(d: Diagram, board: Board, rng: Rng): number[] {
     [idx[i], idx[j]] = [idx[j]!, idx[i]!];
   }
   const chosen = idx.slice(0, k).sort((a, b) => a - b);
-  const cx = board.width / 2, cy = board.height / 2;
-  const holeAngle = chosen.map((h) => Math.atan2(board.holes[h]!.y - cy, board.holes[h]!.x - cx));
+  const theta = order.map((e) => e.angle);
+  const angles = chosen.map((h) => holeAngle(board, h));
   let bestR = 0, bestCost = Infinity;
   for (let r = 0; r < k; r++) {
-    let cost = 0;
-    for (let i = 0; i < k; i++) {
-      const diff = normAngle(holeAngle[(i + r) % k]! - order[i]!.angle);
-      const dd = Math.min(diff, TAU - diff);
-      cost += dd * dd;
-    }
+    const phi = unwrapTargets(theta, theta.map((_, i) => angles[(i + r) % k]!));
+    const cost = phi.reduce((sum, v, i) => sum + (v - theta[i]!) ** 2, 0);
     if (cost < bestCost) {
       bestCost = cost;
       bestR = r;
@@ -1994,94 +2039,85 @@ export function assignHoles(d: Diagram, board: Board, rng: Rng): number[] {
   return holes;
 }
 
-export function makeWarp(d: Diagram, board: Board, holes: number[]): (p: Point) => Point {
-  const order = cyclicOrder(d);
-  const k = order.length, L = board.rimLength;
-  const th = order.map((e) => e.angle);
-  const tt = order.map((e) => board.holes[holes[e.rope * 2 + e.end]!]!.rim);
-  const cx = board.width / 2, cy = board.height / 2;
-  return (p) => {
-    const r = Math.hypot(p.x, p.y);
-    if (r < 1e-15) return { x: cx, y: cy };
-    const a = normAngle(Math.atan2(p.y, p.x));
-    let i = k - 1;
-    for (let j = 0; j < k; j++) {
-      if (th[j]! <= a) i = j;
-      else break;
-    }
-    const j = (i + 1) % k;
-    let dth = normAngle(th[j]! - th[i]!);
-    if (dth === 0) dth = TAU;
-    let dt = (tt[j]! - tt[i]!) % L;
-    if (dt <= 0) dt += L;
-    const R = rimPoint(board, tt[i]! + (normAngle(a - th[i]!) / dth) * dt);
-    return { x: cx + (R.x - cx) * r, y: cy + (R.y - cy) * r };
-  };
+export interface Embedding {
+  center: Point;
+  radius: number;
+  ends: { theta: number; phi: number }[];
 }
 
-function sampleLayout(d: Diagram, board: Board, holes: number[], warp: (p: Point) => Point, tol: number): Layout {
+export function embedding(d: Diagram, board: Board, holes: readonly number[]): Embedding {
+  const order = cyclicOrder(d);
+  const theta = order.map((e) => e.angle);
+  const phi = unwrapTargets(theta, order.map((e) => holeAngle(board, holes[e.rope * 2 + e.end]!)));
+  const ends = Array.from({ length: d.ends.length }, () => ({ theta: 0, phi: 0 }));
+  order.forEach((e, i) => {
+    ends[e.rope * 2 + e.end] = { theta: theta[i]!, phi: phi[i]! };
+  });
+  return { center: { x: board.width / 2, y: board.height / 2 }, radius: (INNER * Math.min(board.width, board.height)) / 2, ends };
+}
+
+export function extensionPoint(board: Board, emb: Embedding, end: number, s: number): Point {
+  const e = emb.ends[end];
+  if (!e) throw new Error(`no end ${end}`);
+  const a = e.theta + s * (e.phi - e.theta);
+  const rho = emb.radius + s * (rimDistance(board, a) - emb.radius);
+  return { x: emb.center.x + rho * Math.cos(a), y: emb.center.y + rho * Math.sin(a) };
+}
+
+function sampleCount(board: Board, emb: Embedding): number {
+  let k = MIN_SAMPLES;
+  for (const e of emb.ends) {
+    const rim = rimDistance(board, e.phi);
+    const len = (Math.abs(e.phi - e.theta) * (emb.radius + rim)) / 2 + (rim - emb.radius);
+    k = Math.max(k, Math.ceil(len / EXT_STEP));
+  }
+  return k;
+}
+
+function sampleLayout(d: Diagram, board: Board, holes: readonly number[], emb: Embedding, samples: number): Layout {
   const nodes: LNode[] = [];
   const crossingNode = new Map<number, number>();
   const add = (p: Point, fixed: boolean): number => {
     nodes.push({ x: p.x, y: p.y, fixed });
     return nodes.length - 1;
   };
-  const subdivide = (a: Point, b: Point, A: Point, B: Point, depth: number, emit: (p: Point) => void): void => {
-    if (depth >= MAX_DEPTH) return;
-    const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    const M = warp(m);
-    const dev = Math.hypot(M.x - (A.x + B.x) / 2, M.y - (A.y + B.y) / 2);
-    if (dev <= tol && Math.hypot(B.x - A.x, B.y - A.y) <= MAXLEN) return;
-    subdivide(a, m, A, M, depth + 1, emit);
-    emit(M);
-    subdivide(m, b, M, B, depth + 1, emit);
-  };
-  const ropes: LRope[] = d.ropes.map((rope) => {
+  const inDisc = (v: Point): Point => ({ x: emb.center.x + emb.radius * v.x, y: emb.center.y + emb.radius * v.y });
+  const ropes = d.ropes.map((rope) => {
     const vs = rope.vertices, last = vs.length - 1;
-    const nodeOf = (i: number): number => {
-      const v = vs[i]!;
-      if (i === 0 || i === last) {
-        const h = board.holes[holes[rope.id * 2 + (i === 0 ? 0 : 1)]!]!;
-        return add(h, true);
-      }
-      if (v.kind === "crossing") {
+    const ids: number[] = [], labels: (boolean | null)[] = [];
+    const push = (n: number, label: boolean | null) => {
+      ids.push(n);
+      labels.push(label);
+    };
+    push(add(board.holes[holes[rope.id * 2]!]!, true), null);
+    for (let j = samples - 1; j >= 1; j--) push(add(extensionPoint(board, emb, rope.id * 2, j / samples), false), null);
+    vs.forEach((v, i) => {
+      if (v.kind === "crossing" && i > 0 && i < last) {
         const id = v.crossingId!;
-        const known = crossingNode.get(id);
-        if (known !== undefined) return known;
-        const n = add(warp(v), false);
-        crossingNode.set(id, n);
-        return n;
+        let n = crossingNode.get(id);
+        if (n === undefined) {
+          n = add(inDisc(v), false);
+          crossingNode.set(id, n);
+        }
+        push(n, v.overHere === true);
+      } else {
+        push(add(inDisc(v), false), null);
       }
-      return add(warp(v), false);
-    };
-    const labelOf = (i: number): boolean | null => {
-      const v = vs[i]!;
-      return i > 0 && i < last && v.kind === "crossing" ? v.overHere === true : null;
-    };
-    const ids: number[] = [nodeOf(0)], labels: (boolean | null)[] = [null];
-    for (let i = 0; i < last; i++) {
-      const A = nodes[ids[ids.length - 1]!]!;
-      const bIdx = nodeOf(i + 1);
-      const B = nodes[bIdx]!;
-      subdivide(vs[i]!, vs[i + 1]!, A, B, 0, (p) => {
-        ids.push(add(p, false));
-        labels.push(null);
-      });
-      ids.push(bIdx);
-      labels.push(labelOf(i + 1));
-    }
+    });
+    for (let j = 1; j < samples; j++) push(add(extensionPoint(board, emb, rope.id * 2 + 1, j / samples), false), null);
+    push(add(board.holes[holes[rope.id * 2 + 1]!]!, true), null);
     return { nodes: ids, labels };
   });
   return { nodes, ropes };
 }
 
-export function buildLayout(d: Diagram, board: Board, holes: number[]): Layout {
-  const warp = makeWarp(d, board, holes);
-  let tol = TOL0;
+export function buildLayout(d: Diagram, board: Board, holes: readonly number[]): Layout {
+  const emb = embedding(d, board, holes);
+  let samples = sampleCount(board, emb);
   for (let attempt = 0; attempt < REFINES; attempt++) {
-    const layout = sampleLayout(d, board, holes, warp, tol);
+    const layout = sampleLayout(d, board, holes, emb, samples);
     if (validLayout(layout)) return layout;
-    tol /= 4;
+    samples *= 2;
   }
   throw new RealizeFailed("fit: no valid layout after refining");
 }
@@ -2097,7 +2133,7 @@ export * from "./fit";
 - [ ] **Step 4: Run to verify pass**
 
 Run: `npm test -- tests/fit.test.ts`
-Expected: PASS. If `buildLayout` throws for a seed, find which check fails (an edge pair or a rotation) before changing tolerances; a failing rotation check on an unrefined layout usually means the crossing node's strands were wired to the wrong neighbors.
+Expected: PASS. A scratch run of this code before the plan was finalized built valid layouts for 300 scrambles (4, 7 and 10 ropes) in about 0.2 ms each without refinement. If `buildLayout` throws for a seed, find which check fails (an edge pair or a rotation) first; a failing rotation check usually means a crossing node's strands were wired to the wrong neighbors.
 
 - [ ] **Step 5: Full suite, typecheck, lint, commit**
 
@@ -2105,7 +2141,7 @@ Run: `npm test && npm run typecheck && npm run lint`
 
 ```bash
 git add src/realize tests/fit.test.ts
-git commit -m "feat: fit scrambled diagrams to the board with an angle warp"
+git commit -m "feat: fit scrambled diagrams to the board with extensions to the holes"
 ```
 
 ---
@@ -2359,7 +2395,7 @@ Add to `src/realize/index.ts`: `export * from "./relax";`
 - [ ] **Step 4: Run to verify pass**
 
 Run: `npm test -- tests/relax.test.ts`
-Expected: PASS. Note the time of the 8-rope test in the report; if one layout takes more than about 2 s, say so (a spatial grid for the edge checks is the follow-up, not part of this task).
+Expected: PASS. A scratch run before the plan was finalized took the median distance from each crossing to its nearest neighbor from 5–8 board units to about 11.5 (4, 7 and 10 ropes), with relaxation taking about 0.15 s, 0.8 s and 1.7 s. Report your numbers; a spatial grid for the edge checks is the follow-up if they are much slower, not part of this task.
 
 - [ ] **Step 5: Full suite, typecheck, lint, commit**
 
@@ -3194,7 +3230,7 @@ import type { Layout } from "../../src/realize/layout";
 import { realize } from "../../src/realize/realize";
 import { scrambleWithRetry } from "../../src/scramble/scramble";
 
-const SEEDS = Number(process.env.SEEDS ?? 20);
+const SEEDS = Number(import.meta.env["SEEDS"] ?? 20);
 
 function medianNearestCrossing(L: Layout): number {
   const ids = new Set<number>();
@@ -3278,6 +3314,6 @@ git commit -m "test: measure how often realized boards agree with their diagrams
 
 ## Self-review notes
 
-- **Spec coverage.** §5 board (Task 1); §8.1–8.3 engine model, ends and pegs (Tasks 2–3); §8.4 signature and monitor (Tasks 2, 4); §8.5 benchmark (Task 10, not asserted); §9.1 holes, warp and spread (Tasks 5–6); §9.2 place and inflate (Task 7); §9.3 comparison (Task 7) and dump (Task 8); §10.5 rendering (Task 9, the subset needed to look at boards); §11 engine battery, monitor sanity, realize agreement and dump reproduction (Tasks 4, 7, 8, 10). Not here by design: input, phases, clearing in play, fade, handles and tether, worker, settings, PWA, deploy (plan 3). §9.3's "same set of hooked pairs" follows from equal reduced pair sequences, so it is not checked separately.
+- **Spec coverage.** §5 board (Task 1); §8.1–8.3 engine model, ends and pegs (Tasks 2–3); §8.4 signature and monitor (Tasks 2, 4); §8.5 benchmark (Task 10, not asserted); §9.1 holes, disc extensions and spread (Tasks 5–6); §9.2 place and inflate (Task 7); §9.3 comparison (Task 7) and dump (Task 8); §10.5 rendering (Task 9, the subset needed to look at boards); §11 engine battery, monitor sanity, realize agreement and dump reproduction (Tasks 4, 7, 8, 10). Not here by design: input, phases, clearing in play, fade, handles and tether, worker, settings, PWA, deploy (plan 3). §9.3's "same set of hooked pairs" follows from equal reduced pair sequences, so it is not checked separately.
 - **Known risk.** Whether the spread layouts inflate into agreeing physics is not known until Task 10 runs; Task 7 proves it on a hand-built hook, and the plan's last task reports the measured rate instead of assuming it.
 - **Type consistency.** `Layout`, `LRope.labels`, `Agreement`, `Realized`, `Generated`, `DebugDump` and `Signature` keep the same names and fields across Tasks 5–10; engine rope `i` is diagram rope `i` with particle 0 at end 0 throughout.
