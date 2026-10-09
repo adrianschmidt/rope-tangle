@@ -82,6 +82,15 @@ test.describe("easy board", () => {
     expect(await page.evaluate(() => window.ropeTangleTest!.frameStats().draws)).toBeGreaterThan(before);
   });
 
+  test("shows the deploy ID in the bottom-right corner without blocking drags", async ({ page }) => {
+    const label = page.locator("#deploy-id");
+    await expect(label).toHaveText("e2e-build");
+    const box = (await label.boundingBox())!, view = page.viewportSize()!;
+    expect(box.x + box.width).toBeGreaterThan(view.width - 20);
+    expect(box.y + box.height).toBeGreaterThan(view.height - 20);
+    expect(await label.evaluate((el) => getComputedStyle(el).pointerEvents)).toBe("none");
+  });
+
   test("keeps dragging accurate after a resize", async ({ page }) => {
     await page.setViewportSize({ width: 800, height: 420 });
     await expect.poll(() => page.evaluate(() => document.querySelector("canvas")!.style.width)).toBe("800px");
