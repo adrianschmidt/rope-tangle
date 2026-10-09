@@ -1,6 +1,13 @@
 const CACHE = "rope-tangle-v1";
 
-self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((cache) => cache.add(self.registration.scope))
+      .then(() => self.skipWaiting()),
+  );
+});
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
@@ -9,6 +16,13 @@ self.addEventListener("activate", (event) => {
       .then((keys) => Promise.all(keys.filter((k) => k.startsWith("rope-tangle-") && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
+});
+
+self.addEventListener("message", (event) => {
+  const urls = event.data && event.data.cacheUrls;
+  if (!Array.isArray(urls)) return;
+  const assets = new URL("assets/", self.registration.scope).href;
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(urls.filter((u) => typeof u === "string" && u.startsWith(assets)))));
 });
 
 self.addEventListener("fetch", (event) => {
@@ -20,7 +34,7 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith(`${scope}assets/`)) {
     event.respondWith(
       caches.open(CACHE).then((cache) =>
-        cache.match(req).then(
+        cache.match(req, { ignoreVary: true }).then(
           (hit) =>
             hit ||
             fetch(req).then((res) => {
@@ -35,9 +49,12 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     fetch(req)
       .then((res) => {
-        if (res.ok) caches.open(CACHE).then((cache) => cache.put(req, res.clone()));
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((cache) => cache.put(req, copy));
+        }
         return res;
       })
-      .catch(() => caches.match(req).then((hit) => hit || caches.match(scope))),
+      .catch(() => caches.match(req, { ignoreVary: true }).then((hit) => hit || caches.match(scope, { ignoreVary: true }))),
   );
 });

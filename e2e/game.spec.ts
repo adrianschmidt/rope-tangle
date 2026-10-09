@@ -72,11 +72,72 @@ test.describe("easy board", () => {
     await expect(page.locator("#overlay")).toContainText("Solved · 1 move", { timeout: 30_000 });
   });
 
+  test("stops drawing while nothing moves and resumes on a drag", async ({ page }) => {
+    await idle(page);
+    await page.waitForTimeout(300);
+    const before = await page.evaluate(() => window.ropeTangleTest!.frameStats().draws);
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => window.ropeTangleTest!.frameStats().draws)).toBe(before);
+    await drag(page, await at(page, 192, 256), await at(page, 128, 256));
+    expect(await page.evaluate(() => window.ropeTangleTest!.frameStats().draws)).toBeGreaterThan(before);
+  });
+
   test("keeps dragging accurate after a resize", async ({ page }) => {
     await page.setViewportSize({ width: 800, height: 420 });
     await drag(page, await at(page, 192, 256), await at(page, 128, 256));
     await idle(page);
     expect((await state(page)).ends[0]![1]).toBe(await holeAt(page, 128, 256));
+  });
+});
+
+test.describe("touch", () => {
+  test.use({ hasTouch: true });
+
+  test("ignores a second finger while dragging", async ({ page }) => {
+    await page.goto("?test=1&board=easy");
+    await loaded(page);
+    const cdp = await page.context().newCDPSession(page);
+    const a = await at(page, 192, 256), mid = await at(page, 100, 120), b = await at(page, 40, 10), c = await at(page, 64, 0);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: a.x, y: a.y, id: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: mid.x, y: mid.y, id: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: mid.x, y: mid.y, id: 1 }, { x: b.x, y: b.y, id: 2 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: mid.x, y: mid.y, id: 1 }, { x: c.x, y: c.y, id: 2 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await idle(page);
+    const s = await state(page);
+    expect(s.won).toBe(false);
+    expect(s.ends[0]![1]).toBe(await holeAt(page, 192, 128));
+  });
+});
+
+test.describe("failures", () => {
+  test("offers another try when the board generator cannot start", async ({ page }) => {
+    await page.route("**/assets/worker-*.js", (route) => route.abort());
+    await page.goto("?test=1");
+    await expect(page.locator("#overlay button")).toHaveText("Try again", { timeout: 15_000 });
+  });
+});
+
+test.describe("offline", () => {
+  test("plays offline after one visit", async ({ page, context }) => {
+    await page.goto("?test=1");
+    await loaded(page);
+    await page.evaluate(() => navigator.serviceWorker.ready.then(() => undefined));
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async () => {
+            const urls: string[] = [];
+            for (const k of await caches.keys()) for (const r of await (await caches.open(k)).keys()) urls.push(r.url);
+            return urls.some((u) => u.includes("/assets/worker-")) && urls.some((u) => u.includes("/assets/main-"));
+          }),
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+    await context.setOffline(true);
+    await page.reload();
+    await loaded(page);
+    expect((await state(page)).active).toBeGreaterThan(0);
   });
 });
 
@@ -104,6 +165,6 @@ test.describe("generated boards", () => {
     await page.mouse.up();
     const stats = await page.evaluate(() => window.ropeTangleTest!.frameStats());
     expect(stats.frames).toBeGreaterThan(10);
-    expect(stats.meanMs).toBeLessThan(50);
+    expect(stats.meanTickMs).toBeLessThan(30);
   });
 });

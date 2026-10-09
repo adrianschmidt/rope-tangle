@@ -16,18 +16,28 @@ export function randomSeed(): number {
 }
 
 export class BoardSource {
-  private readonly worker = new Worker(new URL("../generate/worker.ts", import.meta.url), { type: "module" });
+  private worker: Worker | null = null;
   private readonly waiting = new Map<number, (r: GenerateResponse) => void>();
   private nextId = 1;
   private prefetched: { ropes: number; promise: Promise<LoadedBoard> } | null = null;
 
-  constructor() {
-    this.worker.addEventListener("message", (e: MessageEvent<GenerateResponse>) => {
+  private spawn(): Worker {
+    const w = new Worker(new URL("../generate/worker.ts", import.meta.url), { type: "module" });
+    w.addEventListener("message", (e: MessageEvent<GenerateResponse>) => {
       const done = this.waiting.get(e.data.id);
       if (!done) return;
       this.waiting.delete(e.data.id);
       done(e.data);
     });
+    w.addEventListener("error", () => {
+      w.terminate();
+      if (this.worker === w) this.worker = null;
+      this.prefetched = null;
+      const pending = [...this.waiting];
+      this.waiting.clear();
+      for (const [id, done] of pending) done({ id, ok: false, error: "The board generator stopped" });
+    });
+    return w;
   }
 
   next(ropes: number): Promise<LoadedBoard> {
@@ -51,6 +61,7 @@ export class BoardSource {
         else reject(new Error(r.error));
       });
       const req: GenerateRequest = { id, seed: randomSeed(), ropes };
+      this.worker ??= this.spawn();
       this.worker.postMessage(req, { transfer: [] });
     });
   }

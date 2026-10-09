@@ -24,7 +24,7 @@ export interface TestApi {
     ends: (number | null)[][];
     loading: boolean;
   };
-  frameStats(): { frames: number; meanMs: number };
+  frameStats(): { frames: number; meanMs: number; meanTickMs: number; draws: number };
   resetFrameStats(): void;
 }
 
@@ -83,12 +83,13 @@ export function startApp(doc: Document, win: Window): void {
 
   const source = new BoardSource();
   const dumps: string[] = [];
-  const frames = { count: 0, total: 0, last: 0 };
+  const frames = { count: 0, total: 0, last: 0, ticks: 0, tickTotal: 0, draws: 0 };
   const clock = { now: () => win.performance.now() };
   let session: Session | null = null;
   let colors: readonly string[] = ROPE_COLORS;
   let view: View = { s: 1, ox: 0, oy: 0 };
-  let dpr = 1, loadToken = 0, renderMs = 0, budgetMs = 8, winShown = false;
+  let dpr = 1, loadToken = 0, renderMs = 0, budgetMs = 8, winShown = false, dirty = true, movesText = "";
+  let activePointer: number | null = null;
 
   const layout = () => {
     dpr = Math.min(win.devicePixelRatio || 1, 2);
@@ -98,10 +99,12 @@ export function startApp(doc: Document, win: Window): void {
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
     if (session) view = fitView(session.engine.board, w, h);
+    dirty = true;
   };
 
   const updateMoves = () => {
-    movesLabel.textContent = settings.showMoves && session ? String(session.moves) : "";
+    const text = settings.showMoves && session ? String(session.moves) : "";
+    if (text !== movesText) movesLabel.textContent = movesText = text;
   };
 
   const showOverlay = (text: string, button?: { label: string; action: () => void }) => {
@@ -156,10 +159,16 @@ export function startApp(doc: Document, win: Window): void {
   };
 
   canvas.addEventListener("pointerdown", (ev) => {
-    if (session && session.grab(toBoard(ev))) canvas.setPointerCapture(ev.pointerId);
+    if (activePointer !== null || !session || !session.grab(toBoard(ev))) return;
+    activePointer = ev.pointerId;
+    canvas.setPointerCapture(ev.pointerId);
   });
-  canvas.addEventListener("pointermove", (ev) => session?.drag(toBoard(ev)));
-  const letGo = () => {
+  canvas.addEventListener("pointermove", (ev) => {
+    if (ev.pointerId === activePointer) session?.drag(toBoard(ev));
+  });
+  const letGo = (ev: PointerEvent) => {
+    if (ev.pointerId !== activePointer) return;
+    activePointer = null;
     session?.release();
     updateMoves();
   };
@@ -200,6 +209,7 @@ export function startApp(doc: Document, win: Window): void {
   win.addEventListener("resize", layout);
 
   const tick = (t: number) => {
+    const tickStart = clock.now();
     if (frames.last > 0) {
       frames.count++;
       frames.total += t - frames.last;
@@ -207,11 +217,16 @@ export function startApp(doc: Document, win: Window): void {
     frames.last = t;
     const s = session;
     if (s) {
+      const moving = s.animating();
       s.step(clock, budgetMs);
-      const t1 = clock.now();
-      drawScene(ctx, s.engine, colors, view, dpr, { pointer: s.pointer, hoverHole: s.targetHole(), fades: s.fades });
-      renderMs = renderMs * 0.9 + (clock.now() - t1) * 0.1;
-      budgetMs = Math.max(4, Math.min(11, 14 - renderMs));
+      if (moving || dirty) {
+        dirty = false;
+        const t1 = clock.now();
+        drawScene(ctx, s.engine, colors, view, dpr, { pointer: s.pointer, hoverHole: s.targetHole(), fades: s.fades });
+        frames.draws++;
+        renderMs = renderMs * 0.9 + (clock.now() - t1) * 0.1;
+        budgetMs = Math.max(4, Math.min(11, 14 - renderMs));
+      }
       updateMoves();
       if (s.won && !winShown) {
         winShown = true;
@@ -219,6 +234,8 @@ export function startApp(doc: Document, win: Window): void {
         showOverlay(settings.showMoves ? `Solved · ${n} ${n === 1 ? "move" : "moves"}` : "✓", { label: "Next", action: load });
       }
     }
+    frames.ticks++;
+    frames.tickTotal += clock.now() - tickStart;
     win.requestAnimationFrame(tick);
   };
 
@@ -245,11 +262,18 @@ export function startApp(doc: Document, win: Window): void {
         ends: session ? session.engine.ropes.map((r) => [...r.ends]) : [],
         loading: session === null,
       }),
-      frameStats: () => ({ frames: frames.count, meanMs: frames.count > 0 ? frames.total / frames.count : 0 }),
+      frameStats: () => ({
+        frames: frames.count,
+        meanMs: frames.count > 0 ? frames.total / frames.count : 0,
+        meanTickMs: frames.ticks > 0 ? frames.tickTotal / frames.ticks : 0,
+        draws: frames.draws,
+      }),
       resetFrameStats: () => {
         frames.count = 0;
         frames.total = 0;
         frames.last = 0;
+        frames.ticks = 0;
+        frames.tickTotal = 0;
       },
     };
   }
