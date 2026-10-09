@@ -1,7 +1,6 @@
-export interface Point {
-  x: number;
-  y: number;
-}
+import type { Point } from "../util/point";
+
+export type { Point };
 
 export const TAU = Math.PI * 2;
 const EPS = 1e-9;
