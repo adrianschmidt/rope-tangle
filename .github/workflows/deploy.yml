@@ -33,6 +33,8 @@ jobs:
       - run: npm ci --ignore-scripts
 
       - run: npm run build
+        env:
+          VITE_APP_VERSION: "#${{ github.run_number }}"
 
       - run: cp -R spike dist/spike
 
