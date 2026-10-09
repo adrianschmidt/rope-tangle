@@ -2,7 +2,7 @@ import type { Board, Hole } from "../board";
 import type { Point } from "../util/point";
 import { Collider } from "./collider";
 import {
-  BLOCKER_H, CLEARANCE, D, DAMP, DMAX, H0, HOLD_RADIUS, ITER, LAND_WAIT, LIFT, MARGIN, OMEGA, POST_R, STEP, VCUT, VMAX, VREST, WARM_EVERY,
+  BLOCKER_H, CLEARANCE, D, DAMP, DMAX, H0, HOLD_GAIN, HOLD_RADIUS, HOLD_STEP_MAX, ITER, LAND_WAIT, LIFT, LIFT_STEP, MARGIN, OMEGA, POST_R, STEP, VCUT, VMAX, VREST, WARM_EVERY,
 } from "./constants";
 import { segCross } from "./geom3";
 import type { Monitor } from "./monitor";
@@ -277,12 +277,12 @@ export class Engine {
     p.py = p.y;
     p.pz = p.z;
     const zt = this.holdHeight(p, h.rope);
-    p.z = p.z < zt ? Math.min(zt, p.z + STEP) : Math.max(zt, p.z - STEP);
+    p.z = p.z < zt ? Math.min(zt, p.z + LIFT_STEP) : Math.max(zt, p.z - STEP);
     if (!h.lifted && p.z >= LIFT - 1e-9) h.lifted = true;
     if (h.lifted && target) {
       const dx = target.x - p.x, dy = target.y - p.y, d = Math.hypot(dx, dy);
       if (d > 1e-9) {
-        const s = Math.min(STEP, d);
+        const s = Math.min(d, Math.max(STEP, Math.min(HOLD_STEP_MAX, d * HOLD_GAIN)));
         p.x += (dx / d) * s;
         p.y += (dy / d) * s;
       }
