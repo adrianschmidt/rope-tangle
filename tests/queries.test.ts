@@ -53,4 +53,13 @@ describe("pairSequence and hooks", () => {
     d.ropes[1]!.vertices.splice(1, 1);
     expect(() => checkConsistent(d)).toThrow();
   });
+
+  it("checkConsistent catches an over record that disagrees with overHere", () => {
+    const d = createDiagram(2);
+    const id = d.nextCrossingId++;
+    d.crossings.set(id, { id, a: 0, b: 1, over: 0 });
+    d.ropes[0]!.vertices.splice(1, 0, { x: 0, y: 0, kind: "crossing", crossingId: id, overHere: false });
+    d.ropes[1]!.vertices.splice(1, 0, { x: 0, y: 0, kind: "crossing", crossingId: id, overHere: true });
+    expect(() => checkConsistent(d)).toThrow();
+  });
 });

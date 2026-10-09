@@ -59,7 +59,7 @@ export function alternate(d: Diagram, a: number, b: number): boolean {
 }
 
 export function checkConsistent(d: Diagram): void {
-  const seen = new Map<number, { ropes: number[]; overs: number }>();
+  const seen = new Map<number, { ropes: number[]; overs: number; overRope?: number }>();
   for (const r of d.ropes) {
     for (const v of r.vertices) {
       if (v.kind !== "crossing") continue;
@@ -68,7 +68,10 @@ export function checkConsistent(d: Diagram): void {
       let s = seen.get(id);
       if (!s) seen.set(id, (s = { ropes: [], overs: 0 }));
       s.ropes.push(r.id);
-      if (v.overHere) s.overs++;
+      if (v.overHere) {
+        s.overs++;
+        s.overRope = r.id;
+      }
     }
   }
   for (const c of d.crossings.values()) {
@@ -78,6 +81,7 @@ export function checkConsistent(d: Diagram): void {
     if (!((x === c.a && y === c.b) || (x === c.b && y === c.a))) throw new Error(`crossing ${c.id} ropes mismatch`);
     if (s.overs !== 1) throw new Error(`crossing ${c.id} has ${s.overs} over strands`);
     if (c.over !== c.a && c.over !== c.b) throw new Error(`crossing ${c.id} over is neither rope`);
+    if (s.overRope !== c.over) throw new Error(`crossing ${c.id} over disagrees with overHere`);
   }
   if (seen.size !== d.crossings.size) throw new Error("vertex/crossing count mismatch");
 }
