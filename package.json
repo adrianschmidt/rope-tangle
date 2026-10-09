@@ -11,7 +11,8 @@
     "lint": "oxlint --disable-nested-config -c .oxlintrc.jsonc src tests",
     "test": "vitest run",
     "test:watch": "vitest",
-    "measure": "MEASURE=1 vitest run --silent=false tests/measure"
+    "measure": "MEASURE=1 vitest run --silent=false tests/measure",
+    "icons": "node scripts/make-icons.mjs"
   },
   "devDependencies": {
     "oxlint": "^1.85.0",
