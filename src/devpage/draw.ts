@@ -1,6 +1,5 @@
 import type { Diagram } from "../diagram";
-
-export const COLORS = ["#2e9e3a", "#2f7fe0", "#e0453a", "#f0a020", "#8e44d0", "#18b3b3", "#e05fa8", "#8a5a33", "#b8a800", "#5c6b7a"];
+import { ROPE_COLORS } from "../render/ropes";
 
 export function drawDiagram(ctx: CanvasRenderingContext2D, d: Diagram, size: number): void {
   const c = size / 2, r = size * 0.46;
@@ -12,7 +11,7 @@ export function drawDiagram(ctx: CanvasRenderingContext2D, d: Diagram, size: num
   ctx.arc(c, c, r, 0, Math.PI * 2);
   ctx.stroke();
   for (const rope of d.ropes) {
-    ctx.strokeStyle = COLORS[rope.id % COLORS.length]!;
+    ctx.strokeStyle = ROPE_COLORS[rope.id % ROPE_COLORS.length]!;
     ctx.lineWidth = 3;
     ctx.beginPath();
     rope.vertices.forEach((v, i) => (i === 0 ? ctx.moveTo(X(v.x), Y(v.y)) : ctx.lineTo(X(v.x), Y(v.y))));
@@ -27,7 +26,7 @@ export function drawDiagram(ctx: CanvasRenderingContext2D, d: Diagram, size: num
   for (const rope of d.ropes) {
     for (const v of rope.vertices) {
       if (v.kind !== "crossing" || !v.overHere) continue;
-      ctx.fillStyle = COLORS[rope.id % COLORS.length]!;
+      ctx.fillStyle = ROPE_COLORS[rope.id % ROPE_COLORS.length]!;
       ctx.beginPath();
       ctx.arc(X(v.x), Y(v.y), 4, 0, Math.PI * 2);
       ctx.fill();

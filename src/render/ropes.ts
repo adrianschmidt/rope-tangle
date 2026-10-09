@@ -7,7 +7,8 @@ export const ROPE_COLORS: readonly string[] = [
   "#2e9e3a", "#2f7fe0", "#e0453a", "#f0a020", "#8e44d0", "#18b3b3", "#e05fa8", "#8a5a33", "#b8a800", "#5c6b7a",
 ];
 
-const OUTLINE = "#1d2230";
+export const OUTLINE = "#1d2230";
+const HOVER_HOLE = "#b9c3e6";
 const BACKGROUND = "#eef1f8";
 const EMPTY_HOLE = "#d6dbee";
 const EXT = 0.75;
@@ -24,7 +25,9 @@ export function fitView(board: Board, width: number, height: number): View {
   return { s, ox: (width - bw * s) / 2 + m * s, oy: (height - bh * s) / 2 + m * s };
 }
 
-const colorOf = (colors: readonly string[], id: number): string => colors[id % colors.length] ?? OUTLINE;
+export function colorOf(colors: readonly string[], id: number): string {
+  return colors[id % colors.length] ?? OUTLINE;
+}
 
 function runPath(ctx: CanvasRenderingContext2D, r: ERope, k0: number, k1: number): void {
   const p = r.pts, n = p.length;
@@ -41,7 +44,7 @@ function runPath(ctx: CanvasRenderingContext2D, r: ERope, k0: number, k1: number
   }
 }
 
-function drawRopes(ctx: CanvasRenderingContext2D, list: readonly ERope[], colors: readonly string[]): void {
+export function drawRopes(ctx: CanvasRenderingContext2D, list: readonly ERope[], colors: readonly string[]): void {
   const pieces: { r: ERope; k: number; z: number }[] = [];
   for (const r of list) r.pts.forEach((p, k) => pieces.push({ r, k, z: Math.round(p.z) }));
   pieces.sort((a, b) => a.z - b.z || a.r.id - b.r.id || a.k - b.k);
@@ -63,11 +66,14 @@ function drawRopes(ctx: CanvasRenderingContext2D, list: readonly ERope[], colors
   }
 }
 
-export function drawBoard(ctx: CanvasRenderingContext2D, E: Engine, colors: readonly string[], view: View, dpr: number): void {
+export function beginFrame(ctx: CanvasRenderingContext2D, view: View, dpr: number): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = BACKGROUND;
   ctx.fillRect(0, 0, ctx.canvas.width / dpr, ctx.canvas.height / dpr);
   ctx.setTransform(dpr * view.s, 0, 0, dpr * view.s, dpr * view.ox, dpr * view.oy);
+}
+
+export function drawHoles(ctx: CanvasRenderingContext2D, E: Engine, colors: readonly string[], hover: number | null): void {
   const owner = new Map<number, number>();
   for (const r of E.active()) for (const h of r.ends) if (h !== null) owner.set(h, r.id);
   E.board.holes.forEach((P, i) => {
@@ -75,7 +81,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, E: Engine, colors: read
     ctx.arc(P.x, P.y, PEG_R, 0, Math.PI * 2);
     const o = owner.get(i);
     if (o === undefined) {
-      ctx.fillStyle = EMPTY_HOLE;
+      ctx.fillStyle = i === hover ? HOVER_HOLE : EMPTY_HOLE;
       ctx.fill();
     } else {
       ctx.fillStyle = colorOf(colors, o);
@@ -85,6 +91,11 @@ export function drawBoard(ctx: CanvasRenderingContext2D, E: Engine, colors: read
       ctx.stroke();
     }
   });
+}
+
+export function drawBoard(ctx: CanvasRenderingContext2D, E: Engine, colors: readonly string[], view: View, dpr: number): void {
+  beginFrame(ctx, view, dpr);
+  drawHoles(ctx, E, colors, null);
   const act = E.active();
   drawRopes(ctx, act, colors);
   for (const r of act) {
