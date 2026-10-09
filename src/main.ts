@@ -3,7 +3,7 @@ import { scrambleWithRetry } from "./scramble/scramble";
 
 const q = new URLSearchParams(location.search);
 const seed = Number(q.get("seed") ?? 1);
-const ropes = Number(q.get("ropes") ?? 5);
+const ropes = Math.min(10, Math.max(2, Number(q.get("ropes") ?? 5) || 5));
 const { diagram, log, seed: used } = scrambleWithRetry(seed, ropes);
 
 const canvas = document.getElementById("cv");

@@ -1,4 +1,4 @@
-import { cloneDiagram, createDiagram, cyclicOrder, DiagramDegenerate, endPos, gapContaining, gapOf, type Diagram, type EndRef, type Gap } from "../src/diagram";
+import { cloneDiagram, createDiagram, cyclicOrder, DiagramDegenerate, endPos, gapOf, type Diagram, type EndRef, type Gap } from "../src/diagram";
 import { liftedStretch, moveEnd } from "../src/diagram/move";
 import { alternate, checkConsistent, crossingCount, isHooked, pairSequence } from "../src/diagram/queries";
 import { TAU } from "../src/diagram/geometry";
@@ -66,18 +66,32 @@ describe("moveEnd", () => {
   });
 
   it("does not stop the walk at a self-crossing whose over strand is being lifted", () => {
-    // A hooks under B, then A's end loops over A's own retained part, then B's end leaves.
+    const rng = mulberry32(768);
     const d = createDiagram(3);
-    moveEnd(d, 0, 1, { after: { rope: 1, end: 0 }, before: { rope: 1, end: 1 } });            // A over B
-    moveEnd(d, 1, 0, { after: { rope: 1, end: 1 }, before: { rope: 2, end: 0 } });            // B hooks on A
-    moveEnd(d, 1, 0, gapContaining(d, endPos(d, { rope: 1, end: 1 }).angle - 0.05, { rope: 1, end: 0 })); // B's end back over its own strand
-    const selfLabels = pairSequence(d, 1, 1);
-    expect(selfLabels.length === 0 || selfLabels.length === 2).toBe(true);
+    const nextMove = () => {
+      const ref: EndRef = { rope: Math.floor(rng() * 3), end: rng() < 0.5 ? 0 : 1 };
+      const order = cyclicOrder(d, ref);
+      const i = Math.floor(rng() * order.length);
+      return { ref, gap: { after: order[i]!, before: order[(i + 1) % order.length]! } };
+    };
+    for (let step = 0; step < 18; step++) {
+      const { ref, gap } = nextMove();
+      moveEnd(d, ref.rope, ref.end, gap);
+    }
+    const { ref, gap } = nextMove();
+    const vs = d.ropes[ref.rope]!.vertices;
+    const walk = (ref.end === 1 ? vs.slice().reverse() : vs.slice()).filter((v) => v.kind === "crossing");
+    const firstUnder = walk.findIndex((v) => !v.overHere);
+    const self = walk[firstUnder]!.crossingId!;
+    expect(d.crossings.get(self)).toMatchObject({ a: ref.rope, b: ref.rope });
+    expect(walk.slice(0, firstUnder).some((v) => v.crossingId === self)).toBe(true);
+    const holdDown = walk.findIndex((v, k) => k > firstUnder && !v.overHere);
+    const expected = new Set((holdDown < 0 ? walk : walk.slice(0, holdDown)).map((v) => v.crossingId!));
+    expect(expected.size).toBeGreaterThan(new Set(walk.slice(0, firstUnder + 1).map((v) => v.crossingId!)).size);
+    expect(new Set(liftedStretch(d, ref.rope, ref.end))).toEqual(expected);
+    moveEnd(d, ref.rope, ref.end, gap);
     checkConsistent(d);
-    // Whatever B looks like now, lifting B's end 0 again must leave a consistent diagram and never a dangling hold-down.
-    moveEnd(d, 1, 0, { after: { rope: 2, end: 0 }, before: { rope: 2, end: 1 } });
-    checkConsistent(d);
-    expect(pairSequence(d, 1, 1)).toEqual([]);
+    expect(d.crossings.has(self)).toBe(false);
   });
 
   it("keeps the parity invariant and consistency over random moves", () => {

@@ -98,13 +98,13 @@ Why this is right: a lifted end passes over everything, and with all ends on the
 - `crossingCount(d, rope)`: crossings with other ropes (self-crossings excluded).
 - `cyclicOrder(d)`: ends sorted by angle.
 - `liftedStretch(d, rope, end)`: the crossings a move of that end would remove (the step-1 walk). Recipes use it to reason about what a move will and won't undo.
-- `reduce(d)` (optional, not needed for correctness): remove crossing pairs that are adjacent along both ropes with the same `over`. Keeps diagrams small on long scrambles.
+- `reduce(d)`: a copy with crossing pairs removed that are adjacent along both ropes with the same `over` (bigons, which are topologically nothing). The scrambler makes its hook decisions (`match`, `hookedRopes`) on this view, so a bigon never counts as a hook. The live diagram is never reduced, because its geometry would then hold intersections with no crossing record.
 
 ### 6.4 Invariants (tested)
 
 - After any sequence of moves, for every pair of ropes the parity of their crossing count equals whether their ends alternate around the rim.
 - Replaying a move log on a fresh diagram reproduces the same diagram.
-- Moving an end back into the gap it came from, when the lifted stretch had only over-crossings created by the previous move, restores the previous pair sequences (undo property).
+- Moving an end back into the gap it came from, when the lifted stretch had only over-crossings created by the previous move, restores the previous pair sequences up to `reduce` (undo property; the straight return segment can add bigons).
 
 ## 7. Recipes and scrambling (`recipes`, `scramble`)
 

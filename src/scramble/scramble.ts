@@ -1,4 +1,4 @@
-import { DiagramDegenerate, cloneDiagram, createDiagram, hookedRopes, moveEnd, type Diagram } from "../diagram";
+import { DiagramDegenerate, cloneDiagram, createDiagram, hookedRopes, moveEnd, reduce, type Diagram } from "../diagram";
 import { deck, type Move, type Recipe } from "../recipes";
 import { mulberry32, pickWeighted } from "../util/rng";
 
@@ -46,7 +46,8 @@ export function scramble(
   const log: ScrambleLogEntry[] = [];
   let skips = 0;
   for (let applied = 0; applied < difficulty.maxRecipes; ) {
-    const hooked = hookedRopes(d);
+    const view = reduce(d);
+    const hooked = hookedRopes(view);
     if (applied >= difficulty.recipes && hooked.size === ropeCount) break;
     let candidates: Candidate[] = [];
     for (const recipe of recipes) {
@@ -54,7 +55,7 @@ export function scramble(
         for (let b = 0; b < ropeCount; b++) {
           if (a === b) continue;
           for (const end of [0, 1] as const) {
-            if (recipe.match(d, a, b, end)) candidates.push({ recipe, a, b, end });
+            if (recipe.match(view, a, b, end)) candidates.push({ recipe, a, b, end });
           }
         }
       }
@@ -80,7 +81,7 @@ export function scramble(
     }
     if (candidates.length === 0) throw new ScrambleFailed(`seed ${seed}: no recipe matches`);
   }
-  if (hookedRopes(d).size !== ropeCount) throw new ScrambleFailed(`seed ${seed}: ropes left unhooked after ${difficulty.maxRecipes} recipes`);
+  if (hookedRopes(reduce(d)).size !== ropeCount) throw new ScrambleFailed(`seed ${seed}: ropes left unhooked after ${difficulty.maxRecipes} recipes`);
   return { diagram: d, log };
 }
 

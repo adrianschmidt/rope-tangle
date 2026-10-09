@@ -1,11 +1,12 @@
-import { moveEnd, pairSequence, type Diagram } from "../diagram";
+import { moveEnd, pairSequence, reduce, type Diagram } from "../diagram";
 import { flipGap } from "./flip";
 import { hook } from "./hook";
 import type { Move, Recipe } from "./types";
 
 function underEnd(d: Diagram, rope: number, partner: number): 0 | 1 | null {
-  if (pairSequence(d, rope, partner, 0)[0] === "under") return 0;
-  if (pairSequence(d, rope, partner, 1)[0] === "under") return 1;
+  const view = reduce(d);
+  if (pairSequence(view, rope, partner, 0)[0] === "under") return 0;
+  if (pairSequence(view, rope, partner, 1)[0] === "under") return 1;
   return null;
 }
 
