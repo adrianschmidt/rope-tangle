@@ -231,7 +231,7 @@ Canvas 2D, device pixel ratio capped at 2. Ropes are flat ribbons (width 12, dar
 
 ### 10.6 Generation and settings
 
-- `scramble` + `realize` run in a Web Worker; the main thread shows "Scrambling…" (the only text besides the top bar) and receives the engine state as a transferable snapshot. After a win, the next board is generated in the background so Next is instant.
+- `scramble` + `realize` run in a Web Worker; the main thread shows "Scrambling…" (the only text besides the top bar) and receives the engine state as a transferable snapshot. As soon as a board is shown, the next one is generated in the background, so both Next and New are instant unless the rope count changes.
 - Settings persist in `localStorage` under `rope-tangle/settings`: `{ ropes, showMoves }`. Nothing else is stored; a reload gives a new board. (All games on adrianschmidt.github.io share one origin's storage, so this stays tiny.)
 
 ## 11. Testing
