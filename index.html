@@ -7,7 +7,11 @@
   </head>
   <body style="margin:0;font:14px system-ui;background:#eef1f8">
     <div id="info" style="padding:8px"></div>
-    <canvas id="cv"></canvas>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;padding:0 8px">
+      <canvas id="diagram"></canvas>
+      <canvas id="board"></canvas>
+    </div>
+    <textarea id="dump" readonly style="display:none;width:95%;height:160px;margin:8px"></textarea>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
