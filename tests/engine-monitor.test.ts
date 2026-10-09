@@ -70,6 +70,7 @@ describe("pass-through monitor", () => {
     }
     E.substep(null);
     expect(m.kinds.flip).toBeGreaterThan(0);
+    expect(m.kinds.link).toBe(1);
   });
 
   it("compares the first substep against the state when the monitor was attached", () => {
@@ -97,6 +98,7 @@ describe("pass-through monitor", () => {
         scriptedMove(E, rope, end, free[Math.floor(rng() * free.length)]!);
       }
       expect(m.count).toBe(0);
+      expect(m.kinds.link).toBe(0);
       expect(E.minDist).toBeGreaterThan(10);
       expect(E.ropes.every((r) => r.pts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.z)))).toBe(true);
     }

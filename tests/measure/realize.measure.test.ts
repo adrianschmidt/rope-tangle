@@ -23,7 +23,7 @@ describe("realize measurements", () => {
     const rows: Record<string, string | number>[] = [];
     for (let n = 4; n <= 10; n++) {
       const board = boardForRopes(n);
-      let agree = 0, fitFail = 0, flags = 0, ms = 0, subMs = 0, spread = 0, realized = 0;
+      let agree = 0, fitFail = 0, flags = 0, passThroughs = 0, ms = 0, subMs = 0, spread = 0, realized = 0;
       for (let k = 1; k <= SEEDS; k++) {
         const s = scrambleWithRetry(k * 1000, n);
         const t0 = performance.now();
@@ -33,6 +33,7 @@ describe("realize measurements", () => {
           realized++;
           if (r.agreement.ok) agree++;
           flags += r.inflationFlags;
+          passThroughs += r.passThroughs;
           spread += medianNearestCrossing(r.layout);
           const t1 = performance.now();
           for (let i = 0; i < 100; i++) r.engine.substep(null);
@@ -48,6 +49,7 @@ describe("realize measurements", () => {
         agree: `${agree}/${SEEDS}`,
         fitFail,
         flagsPerBoard: +per(flags).toFixed(2),
+        passThroughsPerBoard: +per(passThroughs).toFixed(2),
         spreadMedian: +per(spread).toFixed(1),
         msPerBoard: Math.round(per(ms)),
         msPerSubstep: +per(subMs).toFixed(3),

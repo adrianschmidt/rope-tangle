@@ -20,6 +20,7 @@ export interface Realized {
   layout: Layout;
   agreement: Agreement;
   inflationFlags: number;
+  passThroughs: number;
 }
 
 export function fitSeed(seed: number): number {
@@ -32,5 +33,5 @@ export function realize(d: Diagram, board: Board, seed: number, opts: RealizeOpt
   relax(layout, opts.relaxIterations ?? RELAX_ITERATIONS);
   const monitor = opts.monitor ? new Monitor() : null;
   const engine = placeAndInflate(layout, board, holes, { monitor });
-  return { engine, holes, layout, agreement: compare(d, engine), inflationFlags: monitor?.count ?? 0 };
+  return { engine, holes, layout, agreement: compare(d, engine), inflationFlags: monitor?.count ?? 0, passThroughs: monitor?.kinds.link ?? 0 };
 }
