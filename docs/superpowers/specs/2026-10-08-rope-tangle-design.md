@@ -1,6 +1,6 @@
 # Rope Tangle — design spec
 
-Date: 2026-10-08 (revised 2026-10-09)
+Date: 2026-10-08 (revised 2026-10-09, §9 revised for plan 2)
 Status: reviewed by Adrian; revisions applied
 Repo: `adrianschmidt/rope-tangle` (the prototypes live in `spike/`; this spec describes the real game)
 
@@ -40,10 +40,11 @@ Modules, each a directory under `src/`:
 | `scramble` | Builds a diagram from a seed, rope count and difficulty | `diagram`, `recipes` |
 | `engine` | Physics: thick ropes with height, contacts, pegs, held/flying/landing ends; crossing readout | `board` |
 | `realize` | Fits a diagram to the board's holes, turns it into an engine state, checks agreement | `diagram`, `engine`, `board` |
+| `generate` | One playable board from a seed: scramble, realize, retry the next seed on disagreement, debug dumps | `scramble`, `realize` |
 | `render` | Draws board, ropes, handles | `engine`, `board` |
 | `game` | Input, phases, clearing, win, settings, generation in a worker | all |
 
-Data flow for a new board: `scramble` (pure, fast, no board knowledge) → `realize` (hole fitting and physics settle, in a Web Worker) → `game` receives the engine state → play.
+Data flow for a new board: `generate` (in a Web Worker) runs `scramble` (pure, fast, no board knowledge) → `realize` (hole fitting, spreading, physics settle) → `game` receives the engine state → play.
 
 ## 5. Board (`board`)
 
@@ -185,15 +186,17 @@ Turns a scrambled diagram into a settled engine state. This is the only place wh
 
 ### 9.1 Fitting to the board
 
-1. Map the unit disc onto the board rectangle with a homeomorphism: a point at polar coordinates `(r, θ)` goes to `center + r × (rimPoint at angle θ)`, where the rim point at angle θ is where the ray from the center at that angle meets the rectangle's edge. The circle maps onto the rim and the cyclic order of ends is preserved.
-2. Assign ends to holes with a random monotone assignment (seeded): same cyclic order, one hole per end, the remaining empty holes distributed at random among the gaps. This is where the jitter in end placement lives.
-3. An end's hole is generally not where its mapped rim point landed. Moving the last segment to the hole could change which segments it crosses, so the segment is not moved: insert a `fold` vertex at the mapped rim point pulled one rope width inward, and run a new last segment from that fold along the rim strip to the hole. No rope has a segment inside the rim strip between two neighboring ends, so the new segment crosses nothing and the diagram stays exact. The physics removes the fold when it settles.
+Scrambled diagrams are cramped: in 10-rope scrambles the median distance between neighboring crossings along a rope is about 0.002 of the disc radius (under half a board unit), and the smallest is about 1e-5. Ends can sit within 0.01 radians of each other. Fitting therefore does three things: it pins ends to holes, it turns the diagram into a board-sized drawing without changing its topology, and it spreads that drawing out so the physics starts from rope-scale features.
+
+1. **Holes.** Assign ends to holes with a random monotone assignment (seeded): a random set of holes, taken in rim order, rotated to best match the ends' angles. Same cyclic order, one hole per end, the empty holes spread at random among the gaps. This is where the jitter in end placement lives.
+2. **Warp.** Map the unit disc onto the board with a homeomorphism that sends every end exactly onto its hole: the angle range between two consecutive ends maps linearly onto the rim stretch between their holes, and a point at `(r, θ)` goes to `center + r × (that rim point − center)`. Straight diagram segments become curves; they are sampled adaptively into a straight-line drawing (a *layout*: one node per crossing shared by both strands, bend nodes, end nodes fixed at holes). The layout is checked: no two edges meet except at shared nodes, and at every crossing node the two strands still alternate around it. If the check fails, sampling is refined; after six refinements realization fails with a dump.
+3. **Spread.** Relax the layout while keeping its topology: each free node moves toward the average of its neighbors plus a short-range push away from nodes closer than `D`, no step exceeds 0.45 of the node's distance to the nearest edge it is not part of, and a step is accepted only if it keeps the layout valid and sweeps over no other node. Steps that fail are halved once, then skipped.
 
 ### 9.2 Place and inflate
 
-1. For each diagram rope, build the particle chain along its mapped polyline (ends, folds, crossing vertices) at `H0` spacing.
+1. For each rope, build the particle chain along the spread layout at no more than `H0` spacing; every crossing node becomes a particle.
 2. Heights: at each crossing set the over strand to `+8` and the under strand to `−8` (half the final contact distance); interpolate linearly in arc length between crossings; ends at 0.
-3. Create the engine with contact distance 0, then settle while growing the contact distance linearly to `D = 16` over 150 substeps, then settle to rest (net movement over an 8-substep window below 0.15 units, or 800 substeps). The heights already encode every crossing's order, and nothing starts penetrated, so contacts never have to guess which way to push.
+3. Create the engine with contact distance 0 and resampling off, then run 150 substeps while growing the contact distance linearly to `D = 16`, then turn resampling on and settle to rest (net movement over an 8-substep window below 0.15 units, or 800 substeps). The heights already encode every crossing's order, and nothing starts penetrated, so contacts never have to guess which way to push. Whether z-tension runs during the ramp is decided by measurement (§11).
 4. Compare the engine's signature with the diagram (§9.3).
 
 ### 9.3 Agreement check and debug dump
