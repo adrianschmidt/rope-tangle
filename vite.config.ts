@@ -10,7 +10,7 @@ export default defineConfig({
     rolldownOptions: {
       input: {
         main: fileURLToPath(new URL("index.html", import.meta.url)),
-        dev: fileURLToPath(new URL("dev/index.html", import.meta.url)),
+        debug: fileURLToPath(new URL("debug/index.html", import.meta.url)),
       },
     },
   },
