@@ -7,6 +7,7 @@ export interface ClosestOut {
 }
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const snap = (v: number) => (Math.abs(v) < 1e-9 ? 0 : Math.abs(v - 1) < 1e-9 ? 1 : v);
 
 export function closestSegSeg(p1: P3, q1: P3, p2: P3, q2: P3, out: ClosestOut): void {
   const d1x = q1.x - p1.x, d1y = q1.y - p1.y, d1z = q1.z - p1.z;
@@ -48,8 +49,8 @@ export function segCross(p1: Point, p2: Point, p3: Point, p4: Point): [number, n
   const den = d1x * d2y - d1y * d2x;
   if (Math.abs(den) < 1e-12) return null;
   const ex = p3.x - p1.x, ey = p3.y - p1.y;
-  const t = (ex * d2y - ey * d2x) / den;
-  const u = (ex * d1y - ey * d1x) / den;
+  const t = snap((ex * d2y - ey * d2x) / den);
+  const u = snap((ex * d1y - ey * d1x) / den);
   if (t < 0 || t >= 1 || u < 0 || u >= 1) return null;
   return [t, u];
 }

@@ -66,6 +66,15 @@ describe("engine core", () => {
     for (const r of E.ropes) for (const p of r.pts) expect(Math.abs(p.z)).toBeLessThan(1e-9);
   });
 
+  it("counts a crossing that lies exactly on a particle of both ropes once", () => {
+    const board = rimBoard(4, 5), E = new Engine(board);
+    E.addRope([{ x: 80.86905977054903, y: 22.013889241919887, z: 0 }, { x: 75.44285499490798, y: 21.801074529066682, z: 8 }, { x: 66.71662794356318, y: 18.344553847265523, z: 0 }], [0, 1]);
+    E.addRope([{ x: 81.56452667585138, y: 32.95186370745302, z: 0 }, { x: 75.44285499490798, y: 21.801074529066682, z: -8 }, { x: 64.94838817123885, y: 13.068748888916865, z: 0 }], [2, 3]);
+    const list = [...E.signature().values()].flat();
+    expect(list).toHaveLength(1);
+    expect(list[0]!.over).toBe(0);
+  });
+
   it("orders a pair's crossings along the lower-numbered rope", () => {
     const board = rimBoard(4, 5), E = new Engine(board);
     E.addRope([{ x: 0, y: 128, z: 0 }, { x: 192, y: 128, z: 0 }], [holeAt(board, 0, 128), holeAt(board, 192, 128)]);
