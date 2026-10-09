@@ -1,5 +1,5 @@
 import { rimBoard, type Board } from "../src/board";
-import { LIFT, POST_R } from "../src/engine/constants";
+import { HOLD_STEP_MAX, LIFT, POST_R } from "../src/engine/constants";
 import { Engine } from "../src/engine/engine";
 import { scriptedMove } from "../src/engine/script";
 import { settle } from "../src/engine/settle";
@@ -17,15 +17,31 @@ describe("ends", () => {
     E.straightRope(holeAt(board, 64, 0), holeAt(board, 128, 0));
     E.grab(0, 0);
     const target = { x: 96, y: 128 };
-    for (let i = 0; i < 14; i++) E.substep(target);
+    for (let i = 0; i < 4; i++) E.substep(target);
     const p = E.endPoint(0, 0);
     expect(p.x).toBe(64);
     expect(p.y).toBe(0);
-    expect(p.z).toBeCloseTo(42);
+    expect(p.z).toBeCloseTo(36);
     E.substep(target);
     expect(E.held?.lifted).toBe(true);
     expect(p.z).toBeCloseTo(LIFT);
-    expect(Math.hypot(p.x - 64, p.y)).toBeCloseTo(3);
+    expect(Math.hypot(p.x - 64, p.y)).toBeCloseTo(HOLD_STEP_MAX);
+  });
+
+  it("carries a held end across the board in a few dozen substeps and stops on the target", () => {
+    const board = rimBoard(4, 5), E = new Engine(board);
+    E.straightRope(holeAt(board, 0, 0), holeAt(board, 64, 0));
+    E.grab(0, 0);
+    const target = { x: 192, y: 256 }, p = E.endPoint(0, 0);
+    let n = 0;
+    while (n < 200 && !(E.held?.lifted && p.x === target.x && p.y === target.y)) {
+      const x = p.x, y = p.y;
+      E.substep(target);
+      expect(Math.hypot(p.x - x, p.y - y)).toBeLessThanOrEqual(HOLD_STEP_MAX + 1e-9);
+      n++;
+    }
+    expect(n).toBeLessThan(45);
+    expect(p).toMatchObject(target);
   });
 
   it("lands a moved end in its new hole at rest height", () => {
