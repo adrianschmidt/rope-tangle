@@ -1,0 +1,260 @@
+import { drawScene } from "../render/scene";
+import { fitView, ROPE_COLORS, type View } from "../render/ropes";
+import type { Point } from "../util/point";
+import { mulberry32 } from "../util/rng";
+import { BoardSource, type LoadedBoard } from "./board-source";
+import { easyBoard } from "./easy";
+import { Session, type Phase } from "./session";
+import { loadSettings, memoryStore, saveSettings, type KeyValueStore } from "./settings";
+
+const BAR_HEIGHT = 48;
+const MAX_DUMPS = 20;
+
+export interface TestApi {
+  boardToClient(x: number, y: number): Point;
+  holeToClient(i: number): Point;
+  holeAt(x: number, y: number): number;
+  state(): {
+    phase: Phase;
+    moves: number;
+    won: boolean;
+    active: number;
+    held: number | null;
+    flying: number;
+    ends: (number | null)[][];
+    loading: boolean;
+  };
+  frameStats(): { frames: number; meanMs: number };
+  resetFrameStats(): void;
+}
+
+declare global {
+  interface Window {
+    ropeTangleTest?: TestApi;
+  }
+}
+
+export function shuffledColors(seed: number): string[] {
+  const c = [...ROPE_COLORS], rng = mulberry32(seed);
+  for (let i = c.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [c[i], c[j]] = [c[j]!, c[i]!];
+  }
+  return c;
+}
+
+function element<T extends HTMLElement>(doc: Document, id: string, type: new () => T): T {
+  const el = doc.getElementById(id);
+  if (!(el instanceof type)) throw new Error(`missing #${id}`);
+  return el;
+}
+
+function storageOf(win: Window): KeyValueStore {
+  try {
+    const s = win.localStorage;
+    s.getItem("rope-tangle/probe");
+    return s;
+  } catch {
+    return memoryStore();
+  }
+}
+
+export function startApp(doc: Document, win: Window): void {
+  const canvas = element(doc, "board", HTMLCanvasElement);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no 2d context");
+  const ropesSelect = element(doc, "ropes", HTMLSelectElement);
+  const newButton = element(doc, "new", HTMLButtonElement);
+  const movesLabel = element(doc, "moves", HTMLSpanElement);
+  const overlay = element(doc, "overlay", HTMLDivElement);
+  const settingsButton = element(doc, "settings-button", HTMLButtonElement);
+  const dialog = element(doc, "settings", HTMLDialogElement);
+  const showMoves = element(doc, "show-moves", HTMLInputElement);
+  const dumpButton = element(doc, "show-dump", HTMLButtonElement);
+  const dumpBox = element(doc, "dump", HTMLTextAreaElement);
+  const closeSettings = element(doc, "close-settings", HTMLButtonElement);
+
+  const params = new URLSearchParams(win.location.search);
+  const testMode = params.has("test");
+  const store = storageOf(win);
+  const settings = loadSettings(store);
+  const visitRopes = Number(params.get("ropes"));
+  if (testMode && Number.isInteger(visitRopes) && visitRopes >= 4 && visitRopes <= 10) settings.ropes = visitRopes;
+
+  const source = new BoardSource();
+  const dumps: string[] = [];
+  const frames = { count: 0, total: 0, last: 0 };
+  const clock = { now: () => win.performance.now() };
+  let session: Session | null = null;
+  let colors: readonly string[] = ROPE_COLORS;
+  let view: View = { s: 1, ox: 0, oy: 0 };
+  let dpr = 1, loadToken = 0, renderMs = 0, budgetMs = 8, winShown = false;
+
+  const layout = () => {
+    dpr = Math.min(win.devicePixelRatio || 1, 2);
+    const w = win.innerWidth, h = win.innerHeight - BAR_HEIGHT;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    if (session) view = fitView(session.engine.board, w, h);
+  };
+
+  const updateMoves = () => {
+    movesLabel.textContent = settings.showMoves && session ? String(session.moves) : "";
+  };
+
+  const showOverlay = (text: string, button?: { label: string; action: () => void }) => {
+    const line = doc.createElement("div");
+    line.textContent = text;
+    overlay.replaceChildren(line);
+    if (button) {
+      const b = doc.createElement("button");
+      b.textContent = button.label;
+      b.addEventListener("click", button.action);
+      overlay.append(b);
+    }
+    overlay.hidden = false;
+  };
+
+  const begin = (b: LoadedBoard) => {
+    session = new Session(b.engine);
+    colors = shuffledColors(b.seed);
+    dumps.push(...b.dumps);
+    dumps.splice(0, Math.max(0, dumps.length - MAX_DUMPS));
+    winShown = false;
+    layout();
+    overlay.hidden = true;
+    updateMoves();
+  };
+
+  const load = () => {
+    const token = ++loadToken, ropes = settings.ropes;
+    session = null;
+    updateMoves();
+    showOverlay("Scrambling…");
+    if (testMode && params.get("board") === "easy") {
+      begin({ engine: easyBoard(), seed: 1, ropes: 2, dumps: [] });
+      return;
+    }
+    source.next(ropes).then(
+      (b) => {
+        if (token !== loadToken) return;
+        begin(b);
+        source.prefetch(ropes);
+      },
+      (e: unknown) => {
+        if (token !== loadToken) return;
+        showOverlay(e instanceof Error ? e.message : "No board", { label: "Try again", action: load });
+      },
+    );
+  };
+
+  const toBoard = (ev: PointerEvent): Point => {
+    const r = canvas.getBoundingClientRect();
+    return { x: (ev.clientX - r.left - view.ox) / view.s, y: (ev.clientY - r.top - view.oy) / view.s };
+  };
+
+  canvas.addEventListener("pointerdown", (ev) => {
+    if (session && session.grab(toBoard(ev))) canvas.setPointerCapture(ev.pointerId);
+  });
+  canvas.addEventListener("pointermove", (ev) => session?.drag(toBoard(ev)));
+  const letGo = () => {
+    session?.release();
+    updateMoves();
+  };
+  canvas.addEventListener("pointerup", letGo);
+  canvas.addEventListener("pointercancel", letGo);
+  canvas.addEventListener("lostpointercapture", letGo);
+
+  for (let n = 4; n <= 10; n++) {
+    const o = doc.createElement("option");
+    o.value = String(n);
+    o.textContent = String(n);
+    ropesSelect.append(o);
+  }
+  ropesSelect.value = String(settings.ropes);
+  ropesSelect.addEventListener("change", () => {
+    settings.ropes = Number(ropesSelect.value);
+    saveSettings(store, settings);
+    load();
+  });
+  newButton.addEventListener("click", load);
+  showMoves.checked = settings.showMoves;
+  showMoves.addEventListener("change", () => {
+    settings.showMoves = showMoves.checked;
+    saveSettings(store, settings);
+    updateMoves();
+  });
+  settingsButton.addEventListener("click", () => {
+    dumpBox.hidden = true;
+    dumpButton.disabled = dumps.length === 0;
+    dialog.showModal();
+  });
+  dumpButton.addEventListener("click", () => {
+    dumpBox.value = dumps.join("\n\n");
+    dumpBox.hidden = false;
+    dumpBox.select();
+  });
+  closeSettings.addEventListener("click", () => dialog.close());
+  win.addEventListener("resize", layout);
+
+  const tick = (t: number) => {
+    if (frames.last > 0) {
+      frames.count++;
+      frames.total += t - frames.last;
+    }
+    frames.last = t;
+    const s = session;
+    if (s) {
+      s.step(clock, budgetMs);
+      const t1 = clock.now();
+      drawScene(ctx, s.engine, colors, view, dpr, { pointer: s.pointer, hoverHole: s.targetHole(), fades: s.fades });
+      renderMs = renderMs * 0.9 + (clock.now() - t1) * 0.1;
+      budgetMs = Math.max(4, Math.min(11, 14 - renderMs));
+      updateMoves();
+      if (s.won && !winShown) {
+        winShown = true;
+        const n = s.moves;
+        showOverlay(settings.showMoves ? `Solved · ${n} ${n === 1 ? "move" : "moves"}` : "✓", { label: "Next", action: load });
+      }
+    }
+    win.requestAnimationFrame(tick);
+  };
+
+  if (testMode) {
+    const toClient = (x: number, y: number): Point => {
+      const r = canvas.getBoundingClientRect();
+      return { x: r.left + view.ox + x * view.s, y: r.top + view.oy + y * view.s };
+    };
+    win.ropeTangleTest = {
+      boardToClient: toClient,
+      holeToClient: (i) => {
+        const h = session?.engine.board.holes[i];
+        if (!h) throw new Error(`no hole ${i}`);
+        return toClient(h.x, h.y);
+      },
+      holeAt: (x, y) => session?.engine.board.holes.findIndex((h) => h.x === x && h.y === y) ?? -1,
+      state: () => ({
+        phase: session?.phase ?? "idle",
+        moves: session?.moves ?? 0,
+        won: session?.won ?? false,
+        active: session?.engine.active().length ?? 0,
+        held: session?.engine.held?.rope ?? null,
+        flying: session?.engine.flying.length ?? 0,
+        ends: session ? session.engine.ropes.map((r) => [...r.ends]) : [],
+        loading: session === null,
+      }),
+      frameStats: () => ({ frames: frames.count, meanMs: frames.count > 0 ? frames.total / frames.count : 0 }),
+      resetFrameStats: () => {
+        frames.count = 0;
+        frames.total = 0;
+        frames.last = 0;
+      },
+    };
+  }
+
+  layout();
+  load();
+  win.requestAnimationFrame(tick);
+}

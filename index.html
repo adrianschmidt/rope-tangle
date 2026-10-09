@@ -2,16 +2,38 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <meta name="theme-color" content="#eef1f8" />
     <title>Rope Tangle</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #eef1f8; font-family: system-ui, -apple-system, sans-serif; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+      [hidden] { display: none !important; }
+      #bar { position: fixed; top: 0; left: 0; right: 0; height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: #fff; box-shadow: 0 1px 4px #0002; z-index: 2; }
+      #bar button, #bar select { font-size: 15px; padding: 5px 9px; border-radius: 8px; border: 1px solid #bbb; background: #f7f7f7; }
+      #moves { margin-left: auto; font-size: 16px; color: #333; min-width: 2ch; text-align: right; }
+      #board { position: fixed; top: 48px; left: 0; display: block; }
+      #overlay { position: fixed; left: 50%; top: 45%; transform: translate(-50%, -50%); background: #fff; padding: 18px 26px; border-radius: 14px; box-shadow: 0 4px 20px #0003; font-size: 20px; text-align: center; z-index: 3; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+      #overlay button { font-size: 18px; padding: 6px 18px; border-radius: 10px; border: 1px solid #bbb; background: #f7f7f7; }
+      dialog { border: none; border-radius: 14px; box-shadow: 0 4px 20px #0003; padding: 18px; font-size: 16px; }
+      dialog label, dialog button { display: block; margin: 8px 0; font-size: 16px; }
+      #dump { width: min(80vw, 520px); height: 160px; font: 11px monospace; }
+    </style>
   </head>
-  <body style="margin:0;font:14px system-ui;background:#eef1f8">
-    <div id="info" style="padding:8px"></div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;padding:0 8px">
-      <canvas id="diagram"></canvas>
-      <canvas id="board"></canvas>
-    </div>
-    <textarea id="dump" readonly style="display:none;width:95%;height:160px;margin:8px"></textarea>
+  <body>
+    <header id="bar">
+      <select id="ropes" aria-label="Ropes"></select>
+      <button id="new">New</button>
+      <span id="moves"></span>
+      <button id="settings-button" aria-label="Settings">⚙︎</button>
+    </header>
+    <canvas id="board"></canvas>
+    <div id="overlay" hidden></div>
+    <dialog id="settings">
+      <label><input type="checkbox" id="show-moves" /> Show moves</label>
+      <button id="show-dump">Debug info</button>
+      <textarea id="dump" readonly hidden></textarea>
+      <button id="close-settings">Close</button>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
