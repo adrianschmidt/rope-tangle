@@ -17,8 +17,33 @@ Tension is off during the inflation ramp (ruling in Task 7), so the plan's z-ten
 
 Without the monitor, realizing a 10-rope board took 1.9–3.7 s (three seeds).
 
-## Decision
+## After the physics debugging (same command, same seeds)
 
+| Ropes | Agree | Fit failures | Monitor flags per board | of which pass-throughs (sign-sum changes) | Median crossing spacing after spreading | ms per board (with monitor) | ms per substep |
+|---|---|---|---|---|---|---|---|
+| 4 | 20/20 | 0 | 0 | 0 | 11.2 | 263 | 0.147 |
+| 5 | 20/20 | 0 | 0 | 0 | 11.0 | 475 | 0.232 |
+| 6 | 20/20 | 0 | 0 | 0 | 11.3 | 770 | 0.289 |
+| 7 | 20/20 | 0 | 0 | 0 | 11.2 | 1165 | 0.386 |
+| 8 | 20/20 | 0 | 1.6 | 0 | 11.4 | 1652 | 0.511 |
+| 9 | 20/20 | 0 | 0.05 | 0 | 11.2 | 2448 | 0.646 |
+| 10 | 20/20 | 0 | 0 | 0 | 11.6 | 3354 | 0.808 |
+
+Without the monitor, realizing a 10-rope board took 2.2–4.3 s (three seeds).
+
+The remaining flags at 8 and 9 ropes are the monitor's documented false positive: two ropes running alongside each other make crossing pairs appear and vanish together, interleaved with another crossing in one rope's order. Their sign sums never change.
+
+## What was actually wrong
+
+None of the three suspected causes below was the main story. The three dumped 4-rope boards contain no pass-through at all: every per-pair sum of crossing signs is the same at placement, after the ramp and at rest.
+
+1. **The agreement check rejected legal motion.** Comparing label sequences along one rope after cancelling adjacent equal labels is not invariant: a slack bight twists and its self-crossing slides across the other rope (Reidemeister III), which reorders a pair's crossings along one rope ("hook turned inside out", "same crossings in a different order"), and adjacent equal labels along one rope are only a bigon if adjacent along the other. `compare` now requires equal sums of crossing signs per pair (twice the linking number) plus the same cyclic order of ends.
+2. **Crossings placed exactly on a particle of both ropes broke the readout.** The chains put the shared crossing node as a particle on both ropes, and both chains bent there. `segCross`'s half-open parameter test then counted the crossing twice or not at all depending on rounding (8 % of such cases), and the sign taken from one outgoing segment was wrong at sharp bends. These produced the "5–67 flags per board": phantom duplicates during the ramp, not pass-throughs. Fixed in placement (each rope runs straight through its crossings, crossing mid-segment on both ropes) and in the readout (parameters within 1e-9 of 0 or 1 snap).
+3. **Pegs (suspected cause 2) was real but rare.** Extension sweeps reached the rim, so a sweep passing an occupied hole late ran inside that peg; the peg shoved the thin rope across a neighbor during the first ramp substeps (one 5-rope board in 35). Fixed in the layout: sweeps end on a ring inset by `POST_R + 4` and go radially to the hole, and the spread keeps edges out of foreign peg discs.
+
+Suspected causes 1 (heights between crossings) and 3 (spacing below rope width) produced no pass-through in any measured board and were not changed.
+
+## Decision (before the debugging)
 Agreement is far below the plan's bar (19/20 for every rope count). Per the plan, nothing was tuned; this is reported with dumps.
 
 Fitting and spreading are not the problem: every board produced a valid layout, and spreading reached the same spacing at every rope count. The losses happen in the physics, while the ropes inflate and settle: the pass-through monitor flags many changes per board that no legal motion produces, and the flag count grows with the number of ropes.
