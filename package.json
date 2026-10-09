@@ -8,13 +8,15 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --disable-nested-config -c .oxlintrc.jsonc src tests",
+    "lint": "oxlint --disable-nested-config -c .oxlintrc.jsonc src tests e2e",
     "test": "vitest run",
     "test:watch": "vitest",
     "measure": "MEASURE=1 vitest run --silent=false tests/measure",
-    "icons": "node scripts/make-icons.mjs"
+    "icons": "node scripts/make-icons.mjs",
+    "e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "oxlint": "^1.85.0",
     "oxlint-tsgolint": "~7.0.2003",
     "typescript": "~7.0.2",
