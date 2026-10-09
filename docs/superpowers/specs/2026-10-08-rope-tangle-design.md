@@ -194,8 +194,8 @@ Scrambled diagrams are cramped: in 10-rope scrambles the median distance between
 
 ### 9.2 Place and inflate
 
-1. For each rope, build the particle chain along the spread layout at no more than `H0` spacing; every crossing node becomes a particle.
-2. Heights: at each crossing set the over strand to `+8` and the under strand to `−8` (half the final contact distance); interpolate linearly in arc length between crossings; ends at 0.
+1. For each rope, build the particle chain along the spread layout at no more than `H0` spacing. Bend nodes become particles. A crossing node does not: both ropes get a particle at the same arc distance `δ` before and after it instead, with `δ = min(H0/2, a third of the shortest edge at the node, half the distance to the nearest edge not at the node)`. Each rope then runs straight through the crossing, the two chords must cross (their four ends lie on one circle around the node, in alternating order), and the crossing lies mid-segment on both ropes, where the readout counts it once with its true sign. A particle exactly at a bending crossing vertex of both ropes was counted twice or not at all depending on rounding, and the sign taken from a single outgoing segment was wrong at sharp bends.
+2. Heights: the two particles flanking a crossing are at `+8` on the over strand and `−8` on the under strand (half the final contact distance); interpolate linearly in arc length between them; ends at 0.
 3. Create the engine with contact distance 0, resampling off and tension off, then run 150 substeps while growing the contact distance linearly to `D = 16`, so the ropes only thicken in place. Then turn tension and resampling on and settle to rest (net movement over an 8-substep window below 0.15 units, or 800 substeps). The heights already encode every crossing's order, and nothing starts penetrated, so contacts never have to guess which way to push. Tension must stay off during the ramp: with it on, a taut loop slides through the rope it hooks before the ropes have any thickness (seen on the very first hand-built hook).
 4. Compare the engine's signature with the diagram (§9.3).
 

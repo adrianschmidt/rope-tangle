@@ -3,13 +3,18 @@ import { cloneDiagram, createDiagram, type Diagram } from "../src/diagram";
 import { D } from "../src/engine/constants";
 import { compare } from "../src/realize/compare";
 import { assignHoles, buildLayout } from "../src/realize/fit";
-import { chainPoints } from "../src/realize/place";
+import { chainPoints, crossingRadii } from "../src/realize/place";
 import { realize } from "../src/realize/realize";
 import dump4000 from "../docs/superpowers/notes/dumps/4-ropes-seed-4000.json?raw";
 import dump6000 from "../docs/superpowers/notes/dumps/4-ropes-seed-6000.json?raw";
 import dump10000 from "../docs/superpowers/notes/dumps/4-ropes-seed-10000.json?raw";
 import { diagramFromJson, parseDump } from "../src/generate/dump";
 import { cross, hook } from "../src/recipes";
+import { scrambleWithRetry } from "../src/scramble/scramble";
+import { relax } from "../src/realize/relax";
+import { linking, pairSequence } from "../src/diagram";
+import { Engine } from "../src/engine/engine";
+import { pairKey } from "../src/engine/types";
 import { mulberry32 } from "../src/util/rng";
 
 function hooked(): Diagram {
@@ -36,6 +41,29 @@ describe("chainPoints", () => {
     expect(Math.max(...z1)).toBe(D / 2);
     expect(Math.min(...z1)).toBe(-D / 2);
   });
+});
+
+describe("chainPoints", () => {
+  it("runs each rope straight through its crossings so the chains read exactly like the diagram", () => {
+    for (const n of [4, 7, 10]) {
+      for (const seed of [1000, 2000]) {
+        const s = scrambleWithRetry(seed, n), board = boardForRopes(n);
+        const holes = assignHoles(s.diagram, board, mulberry32(seed));
+        const L = buildLayout(s.diagram, board, holes);
+        relax(L);
+        const E = new Engine(board), radii = crossingRadii(L);
+        L.ropes.forEach((_, i) => E.addRope(chainPoints(L, i, radii), [holes[i * 2]!, holes[i * 2 + 1]!]));
+        const sig = E.signature();
+        for (let a = 0; a < n; a++) {
+          for (let b = a + 1; b < n; b++) {
+            const list = sig.get(pairKey(a, b)) ?? [];
+            expect([n, seed, a, b, list.length]).toEqual([n, seed, a, b, pairSequence(s.diagram, a, b).length]);
+            expect([n, seed, a, b, list.reduce((t, c) => t + c.sign, 0)]).toEqual([n, seed, a, b, linking(s.diagram, a, b)]);
+          }
+        }
+      }
+    }
+  }, 30_000);
 });
 
 describe("realize", () => {
