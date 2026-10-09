@@ -1,5 +1,5 @@
 import { rimBoard, type Board } from "../src/board";
-import { HOLD_STEP_MAX, LIFT, POST_R } from "../src/engine/constants";
+import { CLEARANCE, HOLD_RADIUS, HOLD_STEP_MAX, LIFT, LIFT_STEP, POST_R, STEP } from "../src/engine/constants";
 import { Engine } from "../src/engine/engine";
 import { scriptedMove } from "../src/engine/script";
 import { settle } from "../src/engine/settle";
@@ -34,14 +34,36 @@ describe("ends", () => {
     E.grab(0, 0);
     const target = { x: 192, y: 256 }, p = E.endPoint(0, 0);
     let n = 0;
-    while (n < 200 && !(E.held?.lifted && p.x === target.x && p.y === target.y)) {
+    while (n < 200 && !(E.held?.lifted && Math.hypot(p.x - target.x, p.y - target.y) < 1e-6)) {
       const x = p.x, y = p.y;
       E.substep(target);
       expect(Math.hypot(p.x - x, p.y - y)).toBeLessThanOrEqual(HOLD_STEP_MAX + 1e-9);
       n++;
     }
     expect(n).toBeLessThan(45);
-    expect(p).toMatchObject(target);
+    expect(p.x).toBeCloseTo(target.x);
+    expect(p.y).toBeCloseTo(target.y);
+  });
+
+  it("moves a held end at the slow step while it climbs over a rope ahead", () => {
+    const board = rimBoard(4, 5), E = new Engine(board);
+    E.straightRope(holeAt(board, 0, 0), holeAt(board, 64, 0));
+    const pts: P3[] = [];
+    for (let i = 0; i <= 40; i++) pts.push({ x: 192 * (i / 40), y: 128, z: 200 * Math.sin(Math.PI * (i / 40)) });
+    E.addRope(pts, [holeAt(board, 0, 128), holeAt(board, 192, 128)]);
+    E.grab(0, 0);
+    const target = { x: 96, y: 256 }, p = E.endPoint(0, 0), reach = HOLD_RADIUS + HOLD_STEP_MAX;
+    let climbing = 0;
+    for (let n = 0; n < 200; n++) {
+      const x = p.x, y = p.y, lifted = E.held?.lifted;
+      const below = E.ropes[1]!.pts.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach && q.z + CLEARANCE > p.z + LIFT_STEP);
+      E.substep(target);
+      if (lifted && below) {
+        climbing++;
+        expect(Math.hypot(p.x - x, p.y - y)).toBeLessThanOrEqual(STEP + 1e-9);
+      }
+    }
+    expect(climbing).toBeGreaterThan(0);
   });
 
   it("lands a moved end in its new hole at rest height", () => {

@@ -282,7 +282,8 @@ export class Engine {
     if (h.lifted && target) {
       const dx = target.x - p.x, dy = target.y - p.y, d = Math.hypot(dx, dy);
       if (d > 1e-9) {
-        const s = Math.min(d, Math.max(STEP, Math.min(HOLD_STEP_MAX, d * HOLD_GAIN)));
+        const fast = p.z >= zt - 1e-9 ? Math.min(HOLD_STEP_MAX, d * HOLD_GAIN) : 0;
+        const s = Math.min(d, Math.max(STEP, fast));
         p.x += (dx / d) * s;
         p.y += (dy / d) * s;
       }
@@ -290,7 +291,7 @@ export class Engine {
   }
 
   private holdHeight(p: P3, rope: number): number {
-    const r2 = HOLD_RADIUS * HOLD_RADIUS;
+    const r2 = (HOLD_RADIUS + HOLD_STEP_MAX) ** 2;
     let m = 0;
     for (const r of this.ropes) {
       if (r.cleared || r.id === rope) continue;
