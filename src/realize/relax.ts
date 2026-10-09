@@ -1,6 +1,6 @@
-import { D } from "../engine/constants";
+import { D, POST_R } from "../engine/constants";
 import type { Point } from "../util/point";
-import { edgePairOk, edges, passes, rotationOk, type Edge, type Layout } from "./layout";
+import { edgePairOk, edgeRopes, edges, passes, PEG_CLEAR, pointSegDist, rotationOk, type Edge, type Layout, type Peg } from "./layout";
 
 export const RELAX_ITERATIONS = 60;
 const PULL = 0.5;
@@ -12,6 +12,8 @@ interface Graph {
   incident: number[][];
   nbrs: number[][];
   passes: Map<number, [number, number][]>;
+  edgePegs: Peg[][];
+  nodePegs: Peg[][];
 }
 
 function side(a: Point, b: Point, p: Point): number {
@@ -24,14 +26,8 @@ function inTriangle(p: Point, a: Point, b: Point, c: Point): boolean {
   return !(neg && pos);
 }
 
-function pointSegDist(p: Point, a: Point, b: Point): number {
-  const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
-  const t = l2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2)) : 0;
-  return Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t);
-}
-
-function graphOf(L: Layout): Graph {
-  const es = edges(L);
+function graphOf(L: Layout, pegs: readonly Peg[]): Graph {
+  const es = edges(L), ropes = edgeRopes(L);
   const incident: number[][] = L.nodes.map(() => []);
   const nbrs: number[][] = L.nodes.map(() => []);
   es.forEach((e, i) => {
@@ -40,7 +36,18 @@ function graphOf(L: Layout): Graph {
     nbrs[e.a]!.push(e.b);
     nbrs[e.b]!.push(e.a);
   });
-  return { es, incident, nbrs, passes: passes(L) };
+  const edgePegs = es.map((_, i) => pegs.filter((p) => p.rope !== ropes[i]));
+  const nodePegs = L.nodes.map((_, n) => pegs.filter((p) => incident[n]!.every((i) => ropes[i] !== p.rope)));
+  return { es, incident, nbrs, passes: passes(L), edgePegs, nodePegs };
+}
+
+function pegDistances(L: Layout, g: Graph, n: number): number[] {
+  const out: number[] = [];
+  for (const i of g.incident[n]!) {
+    const e = g.es[i]!;
+    for (const p of g.edgePegs[i]!) out.push(pointSegDist(p, L.nodes[e.a]!, L.nodes[e.b]!));
+  }
+  return out;
 }
 
 function clearance(L: Layout, g: Graph, n: number): number {
@@ -60,12 +67,13 @@ function tryMove(L: Layout, g: Graph, n: number, x: number, y: number): boolean 
       if (q !== n && q !== m && inTriangle(L.nodes[q]!, from, to, M)) return false;
     }
   }
+  const before = pegDistances(L, g, n);
   node.x = x;
   node.y = y;
-  let ok = true;
+  let ok = pegDistances(L, g, n).every((d, i) => d >= POST_R || d >= before[i]!);
   for (const i of g.incident[n]!) {
-    for (let j = 0; j < g.es.length && ok; j++) if (j !== i && !edgePairOk(L, g.es[i]!, g.es[j]!)) ok = false;
     if (!ok) break;
+    for (let j = 0; j < g.es.length && ok; j++) if (j !== i && !edgePairOk(L, g.es[i]!, g.es[j]!)) ok = false;
   }
   if (ok) {
     for (const m of [n, ...g.nbrs[n]!]) {
@@ -83,8 +91,8 @@ function tryMove(L: Layout, g: Graph, n: number, x: number, y: number): boolean 
   return ok;
 }
 
-export function relax(L: Layout, iterations: number = RELAX_ITERATIONS): void {
-  const g = graphOf(L);
+export function relax(L: Layout, iterations: number = RELAX_ITERATIONS, pegs: readonly Peg[] = []): void {
+  const g = graphOf(L, pegs);
   for (let it = 0; it < iterations; it++) {
     let moved = 0;
     for (let n = 0; n < L.nodes.length; n++) {
@@ -103,6 +111,13 @@ export function relax(L: Layout, iterations: number = RELAX_ITERATIONS): void {
         if (dist > 1e-12 && dist < D) {
           sx += (PUSH * dx * (D - dist)) / dist;
           sy += (PUSH * dy * (D - dist)) / dist;
+        }
+      }
+      for (const p of g.nodePegs[n]!) {
+        const dx = node.x - p.x, dy = node.y - p.y, dist = Math.hypot(dx, dy);
+        if (dist > 1e-12 && dist < PEG_CLEAR) {
+          sx += (PUSH * dx * (PEG_CLEAR - dist)) / dist;
+          sy += (PUSH * dy * (PEG_CLEAR - dist)) / dist;
         }
       }
       const len = Math.hypot(sx, sy);

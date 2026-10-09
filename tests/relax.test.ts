@@ -1,7 +1,8 @@
 import { boardForRopes, rimBoard } from "../src/board";
 import { createDiagram, cyclicOrder, moveEnd, type Diagram, type EndRef } from "../src/diagram";
-import { assignHoles, buildLayout } from "../src/realize/fit";
-import { validLayout, type Layout } from "../src/realize/layout";
+import { POST_R } from "../src/engine/constants";
+import { assignHoles, buildLayout, pegs } from "../src/realize/fit";
+import { pegClearance, validLayout, type Layout } from "../src/realize/layout";
 import { relax, RELAX_ITERATIONS } from "../src/realize/relax";
 import { scramble } from "../src/scramble/scramble";
 import { mulberry32 } from "../src/util/rng";
@@ -43,6 +44,19 @@ describe("relax", () => {
       relax(L, RELAX_ITERATIONS);
       expect(validLayout(L)).toBe(true);
       expect(medianNearestCrossing(L)).toBeGreaterThan(before);
+    }
+  }, 60_000);
+
+  it("keeps every edge out of other ropes' peg discs", () => {
+    for (let seed = 1; seed <= 10; seed++) {
+      const n = 4 + (seed % 7);
+      const { diagram } = scramble(seed, n);
+      const board = boardForRopes(n);
+      const holes = assignHoles(diagram, board, mulberry32(seed));
+      const L = buildLayout(diagram, board, holes), P = pegs(board, holes);
+      relax(L, RELAX_ITERATIONS, P);
+      expect([seed, pegClearance(L, P) > POST_R]).toEqual([seed, true]);
+      expect(validLayout(L)).toBe(true);
     }
   }, 60_000);
 

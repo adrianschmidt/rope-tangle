@@ -3,7 +3,7 @@ import { cyclicOrder, normAngle, TAU, type Diagram } from "../diagram";
 import type { Point } from "../util/point";
 import type { Rng } from "../util/rng";
 import { RealizeFailed } from "./errors";
-import { validLayout, type Layout, type LNode } from "./layout";
+import { PEG_CLEAR, validLayout, type Layout, type LNode, type Peg } from "./layout";
 
 export const INNER = 0.6;
 const EXT_STEP = 16;
@@ -18,7 +18,7 @@ export function holeAngle(board: Board, hole: number): number {
   return Math.atan2(h.y - board.height / 2, h.x - board.width / 2);
 }
 
-export function rimDistance(board: Board, angle: number): number {
+export function rimDistance(board: { width: number; height: number }, angle: number): number {
   const dx = Math.abs(Math.cos(angle)), dy = Math.abs(Math.sin(angle));
   const sx = dx > 1e-12 ? board.width / 2 / dx : Infinity;
   const sy = dy > 1e-12 ? board.height / 2 / dy : Infinity;
@@ -78,11 +78,20 @@ export function embedding(d: Diagram, board: Board, holes: readonly number[]): E
   return { center: { x: board.width / 2, y: board.height / 2 }, radius: (INNER * Math.min(board.width, board.height)) / 2, ends };
 }
 
+export function pegs(board: Board, holes: readonly number[]): Peg[] {
+  return holes.map((h, i) => {
+    const P = board.holes[h];
+    if (!P) throw new Error(`no hole ${h}`);
+    return { x: P.x, y: P.y, rope: i >> 1 };
+  });
+}
+
 export function extensionPoint(board: Board, emb: Embedding, end: number, s: number): Point {
   const e = emb.ends[end];
   if (!e) throw new Error(`no end ${end}`);
   const a = e.theta + s * (e.phi - e.theta);
-  const rho = emb.radius + s * (rimDistance(board, a) - emb.radius);
+  const ring = rimDistance({ width: board.width - 2 * PEG_CLEAR, height: board.height - 2 * PEG_CLEAR }, a);
+  const rho = emb.radius + s * (ring - emb.radius);
   return { x: emb.center.x + rho * Math.cos(a), y: emb.center.y + rho * Math.sin(a) };
 }
 
@@ -112,7 +121,7 @@ function sampleLayout(d: Diagram, board: Board, holes: readonly number[], emb: E
       labels.push(label);
     };
     push(add(board.holes[holes[rope.id * 2]!]!, true), null);
-    for (let j = samples - 1; j >= 1; j--) push(add(extensionPoint(board, emb, rope.id * 2, j / samples), false), null);
+    for (let j = samples; j >= 1; j--) push(add(extensionPoint(board, emb, rope.id * 2, j / samples), false), null);
     vs.forEach((v, i) => {
       if (v.kind === "crossing" && i > 0 && i < last) {
         const id = v.crossingId!;
@@ -126,7 +135,7 @@ function sampleLayout(d: Diagram, board: Board, holes: readonly number[], emb: E
         push(add(inDisc(v), false), null);
       }
     });
-    for (let j = 1; j < samples; j++) push(add(extensionPoint(board, emb, rope.id * 2 + 1, j / samples), false), null);
+    for (let j = 1; j <= samples; j++) push(add(extensionPoint(board, emb, rope.id * 2 + 1, j / samples), false), null);
     push(add(board.holes[holes[rope.id * 2 + 1]!]!, true), null);
     return { nodes: ids, labels };
   });

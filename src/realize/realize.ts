@@ -4,7 +4,7 @@ import type { Engine } from "../engine/engine";
 import { Monitor } from "../engine/monitor";
 import { mulberry32 } from "../util/rng";
 import { compare, type Agreement } from "./compare";
-import { assignHoles, buildLayout } from "./fit";
+import { assignHoles, buildLayout, pegs } from "./fit";
 import type { Layout } from "./layout";
 import { placeAndInflate } from "./place";
 import { relax, RELAX_ITERATIONS } from "./relax";
@@ -30,7 +30,7 @@ export function fitSeed(seed: number): number {
 export function realize(d: Diagram, board: Board, seed: number, opts: RealizeOptions = {}): Realized {
   const holes = assignHoles(d, board, mulberry32(fitSeed(seed)));
   const layout = buildLayout(d, board, holes);
-  relax(layout, opts.relaxIterations ?? RELAX_ITERATIONS);
+  relax(layout, opts.relaxIterations ?? RELAX_ITERATIONS, pegs(board, holes));
   const monitor = opts.monitor ? new Monitor() : null;
   const engine = placeAndInflate(layout, board, holes, { monitor });
   return { engine, holes, layout, agreement: compare(d, engine), inflationFlags: monitor?.count ?? 0, passThroughs: monitor?.kinds.link ?? 0 };

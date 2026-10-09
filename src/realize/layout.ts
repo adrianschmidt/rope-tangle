@@ -1,5 +1,14 @@
 import { intersect, normAngle } from "../diagram";
+import { POST_R } from "../engine/constants";
 import type { Point } from "../util/point";
+
+export const PEG_CLEAR = POST_R + 4;
+
+export interface Peg {
+  x: number;
+  y: number;
+  rope: number;
+}
 
 export interface LNode {
   x: number;
@@ -26,6 +35,29 @@ export function edges(L: Layout): Edge[] {
   const out: Edge[] = [];
   for (const r of L.ropes) for (let i = 0; i + 1 < r.nodes.length; i++) out.push({ a: r.nodes[i]!, b: r.nodes[i + 1]! });
   return out;
+}
+
+export function edgeRopes(L: Layout): number[] {
+  const out: number[] = [];
+  L.ropes.forEach((r, id) => {
+    for (let i = 0; i + 1 < r.nodes.length; i++) out.push(id);
+  });
+  return out;
+}
+
+export function pointSegDist(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+  const t = l2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2)) : 0;
+  return Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t);
+}
+
+export function pegClearance(L: Layout, pegs: readonly Peg[]): number {
+  const ropes = edgeRopes(L);
+  let best = Infinity;
+  edges(L).forEach((e, i) => {
+    for (const p of pegs) if (p.rope !== ropes[i]) best = Math.min(best, pointSegDist(p, L.nodes[e.a]!, L.nodes[e.b]!));
+  });
+  return best;
 }
 
 export function passes(L: Layout): Map<number, [number, number][]> {

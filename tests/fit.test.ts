@@ -1,7 +1,8 @@
 import { boardForRopes, rimBoard } from "../src/board";
 import { createDiagram, cyclicOrder, moveEnd, TAU, type Diagram, type EndRef } from "../src/diagram";
-import { assignHoles, buildLayout, embedding, extensionPoint } from "../src/realize/fit";
-import { validLayout } from "../src/realize/layout";
+import { POST_R } from "../src/engine/constants";
+import { assignHoles, buildLayout, embedding, extensionPoint, pegs } from "../src/realize/fit";
+import { pegClearance, validLayout } from "../src/realize/layout";
 import { scramble } from "../src/scramble/scramble";
 import { mulberry32 } from "../src/util/rng";
 
@@ -51,7 +52,7 @@ describe("assignHoles", () => {
 });
 
 describe("embedding", () => {
-  it("starts each extension where the rope meets the disc and ends it at the hole, outside the disc", () => {
+  it("starts each extension where the rope meets the disc and ends it on the hole's radial, clear of the pegs", () => {
     const { diagram } = scramble(3, 6);
     const board = boardForRopes(6);
     const holes = assignHoles(diagram, board, mulberry32(3));
@@ -59,8 +60,10 @@ describe("embedding", () => {
     diagram.ends.forEach((e, key) => {
       const h = board.holes[holes[key]!]!;
       const end = extensionPoint(board, emb, key, 1);
-      expect(end.x).toBeCloseTo(h.x, 6);
-      expect(end.y).toBeCloseTo(h.y, 6);
+      const ux = h.x - emb.center.x, uy = h.y - emb.center.y, vx = end.x - emb.center.x, vy = end.y - emb.center.y;
+      expect(Math.abs(ux * vy - uy * vx) / Math.hypot(ux, uy)).toBeLessThan(1e-6);
+      expect(Math.hypot(end.x - h.x, end.y - h.y)).toBeGreaterThan(POST_R);
+      for (const other of board.holes) expect(Math.hypot(end.x - other.x, end.y - other.y)).toBeGreaterThan(POST_R);
       const start = extensionPoint(board, emb, key, 0);
       expect(start.x).toBeCloseTo(emb.center.x + emb.radius * Math.cos(e.angle), 9);
       expect(start.y).toBeCloseTo(emb.center.y + emb.radius * Math.sin(e.angle), 9);
@@ -98,6 +101,7 @@ describe("buildLayout", () => {
         if (lab !== null) crossingNodes.add(r.nodes[k]!);
       }));
       expect(crossingNodes.size).toBe(diagram.crossings.size);
+      expect(pegClearance(L, pegs(board, holes))).toBeGreaterThan(POST_R);
       L.ropes.forEach((r, i) => {
         const first = L.nodes[r.nodes[0]!]!, last = L.nodes[r.nodes[r.nodes.length - 1]!]!;
         expect(first.fixed && last.fixed).toBe(true);
