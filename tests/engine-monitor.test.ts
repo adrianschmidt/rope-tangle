@@ -6,7 +6,7 @@ import { settle } from "../src/engine/settle";
 import type { P3, PhysCrossing } from "../src/engine/types";
 import { mulberry32 } from "../src/util/rng";
 
-const c = (over: number): PhysCrossing => ({ a: 0, b: 1, over, dz: 0, x: 0, y: 0, ua: 0, ub: 0 });
+const c = (over: number): PhysCrossing => ({ a: 0, b: 1, over, sign: 1, dz: 0, x: 0, y: 0, ua: 0, ub: 0 });
 
 function holeAt(board: Board, x: number, y: number): number {
   const i = board.holes.findIndex((h) => h.x === x && h.y === y);

@@ -1,4 +1,4 @@
-import { normAngle } from "./geometry";
+import { normAngle, type Point } from "./geometry";
 import { endPos } from "./order";
 import type { Diagram } from "./types";
 
@@ -21,6 +21,26 @@ export function pairSequence(d: Diagram, a: number, b: number, fromEnd: 0 | 1 = 
     out.push(v.overHere ? "over" : "under");
   }
   return out;
+}
+
+export function linking(d: Diagram, a: number, b: number): number {
+  const dir = new Map<number, Point>();
+  for (const id of [a, b]) {
+    const vs = d.ropes[id]!.vertices;
+    vs.forEach((v, i) => {
+      if (v.kind !== "crossing" || partnerOf(d, id, v.crossingId!) !== (id === a ? b : a)) return;
+      const p = vs[i - 1]!, n = vs[i + 1]!;
+      dir.set(v.crossingId! * 2 + (id === a ? 0 : 1), { x: n.x - p.x, y: n.y - p.y });
+    });
+  }
+  let sum = 0;
+  for (const c of d.crossings.values()) {
+    if (a === b || !((c.a === a && c.b === b) || (c.a === b && c.b === a))) continue;
+    const da = dir.get(c.id * 2)!, db = dir.get(c.id * 2 + 1)!;
+    const turn = da.x * db.y - da.y * db.x;
+    sum += (c.over === a) === turn > 0 ? 1 : -1;
+  }
+  return sum;
 }
 
 export function isHooked(d: Diagram, a: number, b: number): boolean {

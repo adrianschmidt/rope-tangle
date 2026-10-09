@@ -173,7 +173,7 @@ A hole with an end attached is an obstacle for all other ropes: a capsule of rad
 
 ### 8.4 Readout
 
-- `signature()`: crossings from the xy projection of the current state, with over/under by height, grouped per rope pair and ordered along each rope. Computed on demand (cheap) and used by clearing (§10.4), by `realize` (§9) and by tests.
+- `signature()`: crossings from the xy projection of the current state, with over/under by height and the crossing's sign (+1 when the under strand runs left to right as seen along the over strand), grouped per rope pair and ordered along each rope. Computed on demand (cheap) and used by clearing (§10.4), by `realize` (§9) and by tests.
 - Dev-only **pass-through monitor**: compares successive signatures and flags any change that cannot come from a legal move (a label flip, a pair appearing with opposite labels, a crossing appearing or vanishing away from a free rope). It has known false positives when crossings stack on one spot; it is a test instrument, not game logic.
 
 ### 8.5 Performance budget
@@ -201,7 +201,7 @@ Scrambled diagrams are cramped: in 10-rope scrambles the median distance between
 
 ### 9.3 Agreement check and debug dump
 
-For each rope pair, take the physical and the diagram pair sequences, reduce each by deleting adjacent equal labels (the physics performs exactly those simplifications when ropes pull taut), and require them to be equal; also require identical cyclic order of ends and the same set of hooked pairs.
+For each rope pair, require the sum of crossing signs (`linking` in the diagram, twice the linking number) to be the same in the physics as in the diagram; also require identical cyclic order of ends. The sum of signs is invariant under every motion the physics may legally perform, and a pass-through changes it by 2. Comparing the pair's label sequences does not work: legal motion reorders crossings along a rope (a slack bight twists and its self-crossing slides across the other rope, so a hook reads `under, over` from one side and `over, under` from the other), and adjacent equal labels along one rope are not a bigon unless they are also adjacent along the other. The check is deliberately weaker than isotopy: a strand passing through both legs of a bight at once is not caught; the pass-through monitor (§8.4) covers that during realization.
 
 On disagreement there is no fallback. The game writes a debug dump and generates a fresh board with the next seed so play continues. The dump is a single JSON text containing everything needed to reproduce the case offline: app version, seed, rope count, difficulty, deck version, the move log, the diagram, the physical signature, the per-pair comparison, and the engine constants. It is logged to the console and, in development builds, shown in a copyable text box; in production it is kept in memory and shown on request from the settings panel, so Adrian can copy it and send it for debugging. The check and the dump stay until testing shows the fast path agrees reliably enough to remove them.
 

@@ -1,5 +1,7 @@
-import { createDiagram, type Diagram, type Vertex } from "../src/diagram";
-import { alternate, checkConsistent, crossingCount, hookedRopes, isHooked, pairSequence } from "../src/diagram/queries";
+import { createDiagram, reduce, type Diagram, type Vertex } from "../src/diagram";
+import { alternate, checkConsistent, crossingCount, hookedRopes, isHooked, linking, pairSequence } from "../src/diagram/queries";
+import { cross, hook } from "../src/recipes";
+import { scrambleWithRetry } from "../src/scramble/scramble";
 
 function addCrossing(d: Diagram, a: number, posA: number, b: number, posB: number, over: number): void {
   const id = d.nextCrossingId++;
@@ -61,5 +63,27 @@ describe("pairSequence and hooks", () => {
     d.ropes[0]!.vertices.splice(1, 0, { x: 0, y: 0, kind: "crossing", crossingId: id, overHere: false });
     d.ropes[1]!.vertices.splice(1, 0, { x: 0, y: 0, kind: "crossing", crossingId: id, overHere: true });
     expect(() => checkConsistent(d)).toThrow();
+  });
+});
+
+describe("linking", () => {
+  it("counts a plain crossing once and a hook twice, with the sign of the mirror image negated", () => {
+    const d = createDiagram(4);
+    cross.apply(d, 0, 1, 1);
+    expect(Math.abs(linking(d, 0, 1))).toBe(1);
+    hook.apply(d, 1, 0, 0);
+    const lk = linking(d, 0, 1);
+    expect(Math.abs(lk)).toBe(2);
+    expect(linking(d, 1, 0)).toBe(lk);
+    for (const c of d.crossings.values()) c.over = c.over === c.a ? c.b : c.a;
+    for (const r of d.ropes) for (const v of r.vertices) if (v.kind === "crossing") v.overHere = !v.overHere;
+    expect(linking(d, 0, 1)).toBe(-lk);
+  });
+
+  it("is unchanged by removing bigons", () => {
+    for (const seed of [1000, 2000, 3000]) {
+      const d = scrambleWithRetry(seed, 6).diagram, r = reduce(d);
+      for (let a = 0; a < 6; a++) for (let b = a + 1; b < 6; b++) expect(linking(r, a, b)).toBe(linking(d, a, b));
+    }
   });
 });

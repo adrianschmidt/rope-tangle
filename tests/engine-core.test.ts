@@ -46,7 +46,17 @@ describe("engine core", () => {
     expect(list).toHaveLength(1);
     expect(list[0]!.over).toBe(0);
     expect(list[0]!.dz).toBeGreaterThan(D - 2);
+    expect(list[0]!.sign).toBe(1);
     expect(E.lastMinD).toBeGreaterThan(D - 2);
+  });
+
+  it("negates the crossing sign when the other rope is on top", () => {
+    const E = crossingPair(-4);
+    settle(E);
+    const list = [...E.signature().values()].flat();
+    expect(list).toHaveLength(1);
+    expect(list[0]!.over).toBe(1);
+    expect(list[0]!.sign).toBe(-1);
   });
 
   it("does not push at all with contact distance zero", () => {

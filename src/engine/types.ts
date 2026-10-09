@@ -52,6 +52,7 @@ export interface PhysCrossing {
   a: number;
   b: number;
   over: number;
+  sign: number;
   dz: number;
   x: number;
   y: number;

@@ -1,10 +1,14 @@
 import { boardForRopes } from "../src/board";
 import { cloneDiagram, createDiagram, type Diagram } from "../src/diagram";
 import { D } from "../src/engine/constants";
-import { compare, reduceLabels } from "../src/realize/compare";
+import { compare } from "../src/realize/compare";
 import { assignHoles, buildLayout } from "../src/realize/fit";
 import { chainPoints } from "../src/realize/place";
 import { realize } from "../src/realize/realize";
+import dump4000 from "../docs/superpowers/notes/dumps/4-ropes-seed-4000.json?raw";
+import dump6000 from "../docs/superpowers/notes/dumps/4-ropes-seed-6000.json?raw";
+import dump10000 from "../docs/superpowers/notes/dumps/4-ropes-seed-10000.json?raw";
+import { diagramFromJson, parseDump } from "../src/generate/dump";
 import { cross, hook } from "../src/recipes";
 import { mulberry32 } from "../src/util/rng";
 
@@ -14,14 +18,6 @@ function hooked(): Diagram {
   hook.apply(d, 1, 0, 0);
   return d;
 }
-
-describe("reduceLabels", () => {
-  it("cancels adjacent equal labels until none remain", () => {
-    expect(reduceLabels(["over", "over"])).toEqual([]);
-    expect(reduceLabels(["under", "over", "over", "under"])).toEqual([]);
-    expect(reduceLabels(["over", "under", "under", "under"])).toEqual(["over", "under"]);
-  });
-});
 
 describe("chainPoints", () => {
   it("spaces particles at most H0 apart with crossings at half the contact distance", () => {
@@ -48,8 +44,8 @@ describe("realize", () => {
     expect(r.agreement.orderOk).toBe(true);
     expect(r.agreement.ok).toBe(true);
     const pair = r.agreement.pairs.find((p) => p.a === 0 && p.b === 1)!;
-    expect(reduceLabels(pair.diagram)).toHaveLength(2);
-    expect(reduceLabels(pair.physical)).toEqual(reduceLabels(pair.diagram));
+    expect(Math.abs(pair.linkDiagram)).toBe(2);
+    expect(pair.linkPhysical).toBe(pair.linkDiagram);
   });
 
   it("leaves every end at rest in its assigned hole", () => {
@@ -70,6 +66,14 @@ describe("realize", () => {
     for (const c of m.crossings.values()) if (c.a !== c.b) c.over = c.over === c.a ? c.b : c.a;
     for (const rope of m.ropes) for (const v of rope.vertices) if (v.kind === "crossing") v.overHere = !v.overHere;
     expect(compare(m, r.engine).ok).toBe(false);
+  });
+
+  it("accepts dumped boards whose crossings only slid past each other legally", () => {
+    for (const text of [dump4000, dump6000, dump10000]) {
+      const dump = parseDump(text);
+      const r = realize(diagramFromJson(dump.diagram), boardForRopes(4), dump.seed);
+      expect(r.agreement.ok).toBe(true);
+    }
   });
 
   it("is deterministic", () => {

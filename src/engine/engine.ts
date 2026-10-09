@@ -214,10 +214,12 @@ export class Engine {
       if (!hit) continue;
       const A = sa.rope, B = sb.rope, tA = hit[0], tB = hit[1];
       const za = sa.a.z + (sa.b.z - sa.a.z) * tA, zb = sb.a.z + (sb.b.z - sb.a.z) * tB;
+      const turn = (sa.b.x - sa.a.x) * (sb.b.y - sb.a.y) - (sa.b.y - sa.a.y) * (sb.b.x - sb.a.x);
       const c: PhysCrossing = {
         a: A.id,
         b: B.id,
         over: za >= zb ? A.id : B.id,
+        sign: (za >= zb) === turn > 0 ? 1 : -1,
         dz: za - zb,
         x: sa.a.x + (sa.b.x - sa.a.x) * tA,
         y: sa.a.y + (sa.b.y - sa.a.y) * tA,

@@ -1,4 +1,4 @@
-import { cyclicOrder, pairSequence, type Diagram, type Label } from "../diagram";
+import { cyclicOrder, linking, pairSequence, type Diagram, type Label } from "../diagram";
 import type { Engine } from "../engine/engine";
 import { pairKey, type Signature } from "../engine/types";
 
@@ -7,6 +7,8 @@ export interface PairComparison {
   b: number;
   diagram: Label[];
   physical: Label[];
+  linkDiagram: number;
+  linkPhysical: number;
   ok: boolean;
 }
 
@@ -16,19 +18,16 @@ export interface Agreement {
   pairs: PairComparison[];
 }
 
-export function reduceLabels(seq: readonly Label[]): Label[] {
-  const out: Label[] = [];
-  for (const l of seq) {
-    if (out[out.length - 1] === l) out.pop();
-    else out.push(l);
-  }
-  return out;
-}
-
 export function physicalSequence(sig: Signature, a: number, b: number): Label[] {
   const arr = sig.get(pairKey(a, b)) ?? [];
   const along = a < b ? arr : arr.slice().sort((p, q) => p.ub - q.ub);
   return along.map((c) => (c.over === a ? "over" : "under"));
+}
+
+export function physicalLinking(sig: Signature, a: number, b: number): number {
+  let sum = 0;
+  for (const c of sig.get(pairKey(a, b)) ?? []) sum += c.sign;
+  return sum;
 }
 
 function endOrderOk(d: Diagram, E: Engine): boolean {
@@ -51,9 +50,16 @@ export function compare(d: Diagram, E: Engine): Agreement {
   const pairs: PairComparison[] = [];
   for (let a = 0; a < d.ropes.length; a++) {
     for (let b = a + 1; b < d.ropes.length; b++) {
-      const diagram = pairSequence(d, a, b), physical = physicalSequence(sig, a, b);
-      const rd = reduceLabels(diagram), rp = reduceLabels(physical);
-      pairs.push({ a, b, diagram, physical, ok: rd.length === rp.length && rd.every((l, i) => l === rp[i]) });
+      const linkDiagram = linking(d, a, b), linkPhysical = physicalLinking(sig, a, b);
+      pairs.push({
+        a,
+        b,
+        diagram: pairSequence(d, a, b),
+        physical: physicalSequence(sig, a, b),
+        linkDiagram,
+        linkPhysical,
+        ok: linkDiagram === linkPhysical,
+      });
     }
   }
   const orderOk = endOrderOk(d, E);
