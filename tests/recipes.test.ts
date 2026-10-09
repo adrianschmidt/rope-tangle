@@ -4,6 +4,7 @@ import { TAU } from "../src/diagram/geometry";
 import { cross } from "../src/recipes/cross";
 import { flipGap } from "../src/recipes/flip";
 import { hook } from "../src/recipes/hook";
+import { twist } from "../src/recipes/twist";
 
 const deg = (x: number) => (x / 360) * TAU;
 
@@ -56,5 +57,30 @@ describe("hook", () => {
     hook.apply(d, 1, 0, 0);
     expect(hook.match(d, 1, 0, 0)).toBe(false);
     expect(hook.match(d, 1, 0, 1)).toBe(true);
+  });
+});
+
+describe("twist", () => {
+  it("winds two ropes around each other the requested number of times", () => {
+    const d = createDiagram(4);
+    cross.apply(d, 0, 1, 1);
+    const t = twist(3, 1);
+    expect(t.name).toBe("twist3");
+    expect(t.match(d, 1, 0, 0)).toBe(true);
+    const moves = t.apply(d, 1, 0, 0);
+    expect(moves).toHaveLength(3);
+    expect(pairSequence(d, 1, 0).length).toBe(4);
+    expect(isHooked(d, 0, 1)).toBe(true);
+    checkConsistent(d);
+  });
+
+  it("stops early but stays consistent when a turn cannot be made", () => {
+    const d = createDiagram(2);
+    cross.apply(d, 0, 1, 1);
+    const moves = twist(6, 1).apply(d, 1, 0, 0);
+    expect(moves.length).toBeGreaterThanOrEqual(1);
+    expect(moves.length).toBeLessThanOrEqual(6);
+    checkConsistent(d);
+    expect(isHooked(d, 0, 1)).toBe(true);
   });
 });
