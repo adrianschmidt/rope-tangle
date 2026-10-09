@@ -30,7 +30,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   const scope = new URL(self.registration.scope).pathname;
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
-  if (!url.pathname.startsWith(scope) || url.pathname.startsWith(`${scope}spike/`) || url.pathname.startsWith(`${scope}dev/`)) return;
+  if (!url.pathname.startsWith(scope) || url.pathname.startsWith(`${scope}spike/`) || url.pathname.startsWith(`${scope}debug/`) || url.pathname.startsWith(`${scope}dev/`)) return;
   if (url.pathname.startsWith(`${scope}assets/`)) {
     event.respondWith(
       caches.open(CACHE).then((cache) =>
