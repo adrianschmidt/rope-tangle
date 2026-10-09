@@ -2,17 +2,30 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Rope Tangle · dev</title>
-    <script type="module" crossorigin src="/rope-tangle/assets/dev-BZG_O6EC.js"></script>
-    <link rel="modulepreload" crossorigin href="/rope-tangle/assets/settle-DJm4aFZh.js">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <meta name="theme-color" content="#eef1f8" />
+    <link rel="manifest" href="/rope-tangle/dev/manifest.webmanifest" />
+    <link rel="icon" href="/rope-tangle/dev/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/rope-tangle/dev/icons/icon-192.png" />
+    <title>Rope Tangle</title>
+    <style>html,body{touch-action:none;-webkit-user-select:none;user-select:none;background:#eef1f8;height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}[hidden]{display:none!important}#bar{z-index:2;background:#fff;align-items:center;gap:8px;height:48px;padding:0 10px;display:flex;position:fixed;top:0;left:0;right:0;box-shadow:0 1px 4px #0002}#bar button,#bar select{background:#f7f7f7;border:1px solid #bbb;border-radius:8px;padding:5px 9px;font-size:15px}#moves{color:#333;text-align:right;min-width:2ch;margin-left:auto;font-size:16px}#board{display:block;position:fixed;top:48px;left:0}#overlay{text-align:center;z-index:3;background:#fff;border-radius:14px;flex-direction:column;align-items:center;gap:12px;padding:18px 26px;font-size:20px;display:flex;position:fixed;top:45%;left:50%;transform:translate(-50%,-50%);box-shadow:0 4px 20px #0003}#overlay button{background:#f7f7f7;border:1px solid #bbb;border-radius:10px;padding:6px 18px;font-size:18px}dialog{border:none;border-radius:14px;padding:18px;font-size:16px;box-shadow:0 4px 20px #0003}dialog label,dialog button{margin:8px 0;font-size:16px;display:block}#dump{width:min(80vw,520px);height:160px;font:11px monospace}</style>
+    <script type="module" crossorigin src="/rope-tangle/dev/assets/main-ZNVV4wTy.js"></script>
+    <link rel="modulepreload" crossorigin href="/rope-tangle/dev/assets/settle-BqQe1PI-.js">
   </head>
-  <body style="margin:0;font:14px system-ui;background:#eef1f8">
-    <div id="info" style="padding:8px"></div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;padding:0 8px">
-      <canvas id="diagram"></canvas>
-      <canvas id="board"></canvas>
-    </div>
-    <textarea id="dump" readonly style="display:none;width:95%;height:160px;margin:8px"></textarea>
+  <body>
+    <header id="bar">
+      <select id="ropes" aria-label="Ropes"></select>
+      <button id="new">New</button>
+      <span id="moves"></span>
+      <button id="settings-button" aria-label="Settings">⚙︎</button>
+    </header>
+    <canvas id="board"></canvas>
+    <div id="overlay" hidden></div>
+    <dialog id="settings">
+      <label><input type="checkbox" id="show-moves" /> Show moves</label>
+      <button id="show-dump">Debug info</button>
+      <textarea id="dump" readonly hidden></textarea>
+      <button id="close-settings">Close</button>
+    </dialog>
   </body>
 </html>
