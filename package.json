@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --disable-nested-config -c .oxlintrc.jsonc src tests",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "measure": "MEASURE=1 vitest run --silent=false tests/measure"
   },
   "devDependencies": {
     "oxlint": "^1.85.0",

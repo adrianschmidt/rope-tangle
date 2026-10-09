@@ -11,6 +11,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    exclude: ["**/node_modules/**", "**/dist/**", "**/spike/**", "**/.worktrees/**"],
+    exclude: [
+      "**/node_modules/**", "**/dist/**", "**/spike/**", "**/.worktrees/**", "**/.claude/**",
+      ...(process.env.MEASURE ? [] : ["**/*.measure.test.ts"]),
+    ],
   },
 });
