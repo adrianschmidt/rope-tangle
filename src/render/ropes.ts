@@ -19,9 +19,9 @@ export interface View {
   oy: number;
 }
 
-export function fitView(board: Board, width: number, height: number): View {
+export function fitView(board: Board, width: number, height: number, sideGap = 0): View {
   const m = PEG_R + 10, bw = board.width + 2 * m, bh = board.height + 2 * m;
-  const s = Math.min(width / bw, height / bh);
+  const s = Math.min((width - 2 * sideGap) / bw, height / bh);
   return { s, ox: (width - bw * s) / 2 + m * s, oy: (height - bh * s) / 2 + m * s };
 }
 

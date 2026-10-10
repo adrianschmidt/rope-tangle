@@ -2,12 +2,15 @@ import { drawScene } from "../render/scene";
 import { fitView, ROPE_COLORS, type View } from "../render/ropes";
 import type { Point } from "../util/point";
 import { mulberry32 } from "../util/rng";
+import { guardBack } from "./back-guard";
 import { BoardSource, type LoadedBoard } from "./board-source";
 import { easyBoard } from "./easy";
 import { Session, type Phase } from "./session";
 import { loadSettings, memoryStore, saveSettings, type KeyValueStore } from "./settings";
 
 const BAR_HEIGHT = 48;
+const SIDE_GAP = 32;
+const TOAST_MS = 2500;
 const MAX_DUMPS = 20;
 
 export interface TestApi {
@@ -67,6 +70,7 @@ export function startApp(doc: Document, win: Window): void {
   const newButton = element(doc, "new", HTMLButtonElement);
   const movesLabel = element(doc, "moves", HTMLSpanElement);
   const overlay = element(doc, "overlay", HTMLDivElement);
+  const toast = element(doc, "toast", HTMLDivElement);
   const settingsButton = element(doc, "settings-button", HTMLButtonElement);
   const dialog = element(doc, "settings", HTMLDialogElement);
   const showMoves = element(doc, "show-moves", HTMLInputElement);
@@ -98,7 +102,7 @@ export function startApp(doc: Document, win: Window): void {
     canvas.height = Math.round(h * dpr);
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
-    if (session) view = fitView(session.engine.board, w, h);
+    if (session) view = fitView(session.engine.board, w, h, SIDE_GAP);
     dirty = true;
   };
 
@@ -175,6 +179,16 @@ export function startApp(doc: Document, win: Window): void {
   canvas.addEventListener("pointerup", letGo);
   canvas.addEventListener("pointercancel", letGo);
   canvas.addEventListener("lostpointercapture", letGo);
+
+  let toastTimer = 0;
+  guardBack(win, canvas, () => {
+    toast.textContent = "Go back again to leave";
+    toast.hidden = false;
+    win.clearTimeout(toastTimer);
+    toastTimer = win.setTimeout(() => {
+      toast.hidden = true;
+    }, TOAST_MS);
+  });
 
   for (let n = 4; n <= 10; n++) {
     const o = doc.createElement("option");

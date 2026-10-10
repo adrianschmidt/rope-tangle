@@ -19,6 +19,7 @@
       #overlay button { font-size: 18px; padding: 6px 18px; border-radius: 10px; border: 1px solid #bbb; background: #f7f7f7; }
       dialog { border: none; border-radius: 14px; box-shadow: 0 4px 20px #0003; padding: 18px; font-size: 16px; }
       dialog label, dialog button { display: block; margin: 8px 0; font-size: 16px; }
+      #toast { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); background: #333d; color: #fff; padding: 10px 18px; border-radius: 12px; font-size: 16px; pointer-events: none; z-index: 4; }
       #deploy-id { position: fixed; right: 6px; bottom: 4px; font-size: 11px; color: #0007; pointer-events: none; z-index: 1; }
       #dump { width: min(80vw, 520px); height: 160px; font: 11px monospace; }
     </style>
@@ -32,6 +33,7 @@
     </header>
     <canvas id="board"></canvas>
     <div id="overlay" hidden></div>
+    <div id="toast" hidden></div>
     <dialog id="settings">
       <label><input type="checkbox" id="show-moves" /> Show moves</label>
       <button id="show-dump">Debug info</button>
