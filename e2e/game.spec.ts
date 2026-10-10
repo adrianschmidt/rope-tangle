@@ -178,3 +178,89 @@ test.describe("generated boards", () => {
     expect(stats.meanTickMs).toBeLessThan(30);
   });
 });
+
+async function touch(page: Page, p: P, end: "touchEnd" | "touchCancel"): Promise<void> {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, id: 1 }] });
+  await cdp.send("Input.dispatchTouchEvent", { type: end, touchPoints: [] });
+}
+
+test.describe("back guard with a mouse", () => {
+  test("ignores back requests after mouse clicks", async ({ page }) => {
+    await page.goto("?test=1&board=easy");
+    await loaded(page);
+    const p = await at(page, 96, 128);
+    await page.mouse.click(p.x, p.y);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(300);
+    expect(await page.locator("#toast").isHidden()).toBe(true);
+  });
+});
+
+test.describe("back guard", () => {
+  test.use({ hasTouch: true });
+
+  test("catches one back request per completed touch on the board", async ({ page }) => {
+    await page.clock.install();
+    await page.goto("?test=1&board=easy");
+    await loaded(page);
+    const p = await at(page, 96, 128), toast = page.locator("#toast");
+    await touch(page, p, "touchEnd");
+    await page.keyboard.press("Escape");
+    await expect(toast).toHaveText("Go back again to leave");
+    await page.clock.fastForward(2500);
+    await expect(toast).toBeHidden();
+    await touch(page, p, "touchCancel");
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(300);
+    expect(await toast.isHidden()).toBe(true);
+    await touch(page, p, "touchEnd");
+    await page.keyboard.press("Escape");
+    await expect(toast).toBeVisible();
+  });
+
+  test("falls back to a history entry where close watchers are missing", async ({ page }) => {
+    await page.addInitScript(() => Reflect.deleteProperty(window, "CloseWatcher"));
+    await page.goto("?test=1&board=easy");
+    await loaded(page);
+    const game = page.url(), p = await at(page, 96, 128);
+    await touch(page, p, "touchEnd");
+    await page.goBack();
+    await expect(page.locator("#toast")).toHaveText("Go back again to leave");
+    expect(page.url()).toBe(game);
+    await touch(page, p, "touchCancel");
+    await page.goBack();
+    expect(page.url()).toBe("about:blank");
+  });
+
+  test("keeps the history guard in step with Forward", async ({ page }) => {
+    await page.addInitScript(() => Reflect.deleteProperty(window, "CloseWatcher"));
+    await page.goto("?test=1&board=easy");
+    await loaded(page);
+    const p = await at(page, 96, 128), toast = page.locator("#toast");
+    await touch(page, p, "touchEnd");
+    await page.goBack();
+    await expect(toast).toBeVisible();
+    await page.goForward();
+    await touch(page, p, "touchEnd");
+    await page.evaluate(() => document.getElementById("toast")!.hidden = true);
+    await page.goBack();
+    await expect(toast).toBeVisible();
+    await page.goBack();
+    expect(page.url()).toBe("about:blank");
+  });
+
+  test("keeps the history guard armed across a reload", async ({ page }) => {
+    await page.addInitScript(() => Reflect.deleteProperty(window, "CloseWatcher"));
+    await page.goto("?test=1&board=easy");
+    await loaded(page);
+    await touch(page, await at(page, 96, 128), "touchEnd");
+    await page.reload();
+    await loaded(page);
+    await touch(page, await at(page, 96, 128), "touchEnd");
+    await page.goBack();
+    await expect(page.locator("#toast")).toHaveText("Go back again to leave");
+    await page.goBack();
+    expect(page.url()).toBe("about:blank");
+  });
+});
