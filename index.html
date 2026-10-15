@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rope Tangle has moved</title>
+    <script>
+      (async () => {
+        try {
+          for (const r of await navigator.serviceWorker.getRegistrations()) if (new URL(r.scope).pathname.startsWith("/rope-tangle/")) await r.unregister();
+          for (const key of await caches.keys()) if (key.startsWith("rope-tangle-")) await caches.delete(key);
+        } catch {}
+        location.replace("https://rope-tangle.github.io/" + location.pathname.replace(/^\/rope-tangle\/?/, "") + location.search + location.hash);
+      })();
+    </script>
+  </head>
+  <body>
+    <p>Rope Tangle has moved to <a href="https://rope-tangle.github.io/">rope-tangle.github.io</a>.</p>
+  </body>
+</html>
